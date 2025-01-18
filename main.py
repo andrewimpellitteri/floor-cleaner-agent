@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 import gymnasium as gym
+from stable_baselines3.common.callbacks import BaseCallback
 
 class FlattenObservationWrapper(gym.ObservationWrapper):
     def __init__(self, env):
@@ -30,6 +31,17 @@ class FlattenObservationWrapper(gym.ObservationWrapper):
         agent_state = obs['agent_state']
         return np.concatenate([dirt_map_flat, agent_state])
 
+class RenderCallback(BaseCallback):
+    def __init__(self, render_freq=50000, verbose=0):
+        super().__init__(verbose)
+        self.render_freq = render_freq
+    
+    def _on_step(self) -> bool:
+        if self.n_calls % self.render_freq == 0:
+            # Render the agent in the environment at the specified interval
+            self.training_env.envs[0].render()
+        return True
+
 def make_env(grid_size=10, rank=0):
     def _init():
         env = CleaningRoomEnv(grid_size=grid_size)
@@ -50,14 +62,14 @@ def train_agent():
     # Define model parameters
     model_params = {
         "policy": "MlpPolicy",
-        "learning_rate": 3e-4,
+        "learning_rate": 1e-3,
         "n_steps": 2048,
         "batch_size": 64,
         "n_epochs": 10,
         "gamma": 0.99,
         "gae_lambda": 0.95,
-        "clip_range": 0.2,
-        "ent_coef": 0.01,
+        "clip_range": 0.3,
+        "ent_coef": 0.1,
         "policy_kwargs": dict(
             net_arch=dict(
                 pi=[256, 256],  # Actor network
@@ -90,11 +102,14 @@ def train_agent():
         name_prefix="cleaning_model"
     )
     
+    render_callback = RenderCallback(render_freq=50000)
+
+
     # Train the agent
     total_timesteps = 1_000_000
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[eval_callback, checkpoint_callback],
+        callback=[eval_callback, checkpoint_callback, render_callback],
         progress_bar=True
     )
     
