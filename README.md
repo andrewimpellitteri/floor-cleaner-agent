@@ -25,7 +25,10 @@ This trains the agent with 4 parallel environments for 1,000,000 timesteps, savi
 2. **Evaluating the Agent**
 After training, evaluate the agent's performance:
 
-```python evaluate_agent.py```
+```bash
+python evaluate_agent.py
+```
+
 This runs 10 evaluation episodes and prints the average reward.
 
 Feel free to fork and submit pull requests for improvements.
