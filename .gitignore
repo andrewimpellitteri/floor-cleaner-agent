@@ -1,3 +1,8 @@
 logs/
 
 __pycache__/
+
+model/
+
+vec_normalize.pkl
+cleaning_agent_final.zip

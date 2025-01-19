@@ -8,6 +8,7 @@ import torch
 from gymnasium import spaces
 import gymnasium as gym
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.logger import configure
 
 class FlattenObservationWrapper(gym.ObservationWrapper):
     def __init__(self, env):
@@ -52,7 +53,7 @@ def make_env(grid_size=10, rank=0):
 
 def train_agent():
     # Environment parameters
-    grid_size = 10
+    grid_size = 30
     num_envs = 4  # Number of parallel environments
     
     # Create vectorized environment
@@ -62,26 +63,30 @@ def train_agent():
     # Define model parameters
     model_params = {
         "policy": "MlpPolicy",
-        "learning_rate": 1e-3,
+        "learning_rate": 5e-4,
         "n_steps": 2048,
         "batch_size": 64,
         "n_epochs": 10,
-        "gamma": 0.99,
+        "gamma": 0.95,
         "gae_lambda": 0.95,
-        "clip_range": 0.3,
+        "clip_range": 0.2,
         "ent_coef": 0.1,
         "policy_kwargs": dict(
             net_arch=dict(
-                pi=[256, 256],  # Actor network
-                vf=[256, 256]   # Critic network
+                pi=[512, 512],  # Actor network
+                vf=[512, 512]   # Critic network
             ),
-            activation_fn=torch.nn.ReLU
+            activation_fn=torch.nn.LeakyReLU
         ),
-        "device": "cpu" if torch.mps.is_available() else "cpu"
+        "device": "cpu"
     }
     
+    # Setup TensorBoard logging
+    log_dir = "./logs/tensorboard"
+
     # Create the model
-    model = PPO(env=env, verbose=1, **model_params)
+    # model = PPO(env=env, tensorboard_log=log_dir, verbose=1, **model_params)
+    model = PPO.load("logs/best_model/best_model.zip", env=env, tensorboard_log=log_dir, verbose=1, **model_params)
     
     # Set up callbacks
     eval_env = DummyVecEnv([make_env(grid_size=grid_size)])
@@ -102,14 +107,14 @@ def train_agent():
         name_prefix="cleaning_model"
     )
     
-    render_callback = RenderCallback(render_freq=50000)
+    # render_callback = RenderCallback(render_freq=50000)
 
 
     # Train the agent
-    total_timesteps = 1_000_000
+    total_timesteps = 3_000_000
     model.learn(
         total_timesteps=total_timesteps,
-        callback=[eval_callback, checkpoint_callback, render_callback],
+        callback=[eval_callback, checkpoint_callback],
         progress_bar=True
     )
     
@@ -119,7 +124,7 @@ def train_agent():
 
 def evaluate_agent(model_path="cleaning_agent_final", vec_normalize_path="vec_normalize.pkl"):
     # Create environment
-    env = DummyVecEnv([make_env(grid_size=10)])
+    env = DummyVecEnv([make_env(grid_size=30)])
     env = VecNormalize.load(vec_normalize_path, env)
     env.training = False  # Don't update normalization statistics during evaluation
     env.norm_reward = False
