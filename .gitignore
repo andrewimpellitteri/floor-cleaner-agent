@@ -6,3 +6,8 @@ model/
 
 vec_normalize.pkl
 cleaning_agent_final.zip
+
+eval_logs/
+tensorboard_logs/
+training/
+training_logs/
