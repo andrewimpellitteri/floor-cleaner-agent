@@ -201,12 +201,12 @@ class EnhancedCleaningRoomEnv(gymnasium.Env):
         cleaning_reward = dirt_cleaned * 10.0
         time_penalty = -0.02
 
-        distance_to_drain = np.linalg.norm(self.agent_pos - self.drain_pos)
-        proximity_reward = -0.01 * (distance_to_drain / self.grid_size)
+        # distance_to_drain = np.linalg.norm(self.agent_pos - self.drain_pos)
+        # proximity_reward = -0.01 * (distance_to_drain / self.grid_size)
 
         sparse_completion_reward = 0 if current_dirt_amount > 0.01 else 100
 
-        reward = cleaning_reward + time_penalty + proximity_reward + sparse_completion_reward
+        reward = cleaning_reward + time_penalty + sparse_completion_reward
 
         # --- Episode Termination Conditions ---
         self.current_step += 1
@@ -228,7 +228,7 @@ class EnhancedCleaningRoomEnv(gymnasium.Env):
         info = {
             'dirt_cleaned': dirt_cleaned,
             'time_penalty': time_penalty,
-            'proximity_reward': proximity_reward,
+            # 'proximity_reward': proximity_reward,
             'sparse_completion_reward': sparse_completion_reward,
             'dirt_left': current_dirt_amount,
             'stagnated': stagnated,
