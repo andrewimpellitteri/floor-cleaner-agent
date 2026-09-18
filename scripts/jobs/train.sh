@@ -123,6 +123,14 @@ trap 'kill $SYNC_PID 2>/dev/null || true' EXIT
 # --- the job ----------------------------------------------------------------
 CMD="$VENV/bin/python scripts/train.py --run-name \"$RUN_NAME\" ${TRAIN_ARGS:-}"
 echo "[train.sh] $CMD" | tee -a "$LOG"
+# This command line is mirrored to S3 (private bucket, but shared with anyone
+# who can read it). Secrets travel via pod environment, never inline in args:
+# refuse anything that smells like a pasted key before it can be logged.
+case "$CMD" in
+  *sk-*|*ghp_*|*gho_*|*AKIA*|*xox[bpas]-*|*PRIVATE\ KEY*)
+    fail "TRAIN_ARGS looks like it contains a secret; pass secrets via pod "
+    "environment (--env KEY=VALUE), never inline in arguments" ;;
+esac
 if [ -n "${JOB_TIMEOUT:-}" ] && [ "${JOB_TIMEOUT:-0}" != "0" ]; then
   # shellcheck disable=SC2086
   eval timeout -s KILL "$JOB_TIMEOUT" "$CMD" 2>&1 | tee -a "$LOG"
