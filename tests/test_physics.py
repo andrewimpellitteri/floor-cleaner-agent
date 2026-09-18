@@ -16,7 +16,7 @@ import pytest
 
 from floorclean.config import Config, FloorConfig
 from floorclean.geometry import Floor, build_floor, initial_dirt
-from floorclean.jet import jet_impact
+from floorclean.jet import jet_impact, jet_peak_pressure
 from floorclean.physics import initial_fields, physics_substep, total_dirt
 
 
@@ -112,6 +112,17 @@ def test_water_runs_downhill_into_the_trough():
         y_centroid_1 = float(jnp.sum(state.h * floor.y) / jnp.sum(state.h))
         assert y_centroid_1 < y_centroid_0, "water did not move toward the trough"
     assert remaining < float(jnp.sum(h)), "no water drained away"
+
+
+def test_peak_pressure_matches_full_kernel():
+    """Scalar fast path == full kernel peak (perf refactor guard)."""
+    cfg = Config()
+    floor = build_floor(cfg)
+    for s, t, az in [(0.05, 0.0, 0.0), (0.30, 0.5, 1.0), (1.0, 1.2, -2.0)]:
+        full = jet_impact(cfg, floor, jnp.array(2.0), jnp.array(7.5),
+                          jnp.array(s), jnp.array(t), jnp.array(az)).p_normal
+        fast = jet_peak_pressure(cfg, jnp.array(s), jnp.array(t))
+        assert float(fast) == pytest.approx(float(full), rel=1e-6)
 
 
 def test_jet_pressure_falls_with_standoff():
