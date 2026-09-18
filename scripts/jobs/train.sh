@@ -92,23 +92,33 @@ uv python install 3.12 >>"$LOG" 2>&1 || fail "uv python install 3.12 failed"
 uv venv --python 3.12 "$VENV" >>"$LOG" 2>&1 || fail "venv creation failed"
 # shellcheck disable=SC1091
 . "$VENV/bin/activate"
-uv pip install -q --python "$VENV/bin/python" -e "$REPO[cuda]" >>"$LOG" 2>&1 \
-  || fail "pip install -e .[cuda] failed"
+uv pip install -q --python "$VENV/bin/python" -e "$REPO[cuda,wandb]" >>"$LOG" 2>&1 \
+  || fail "pip install -e .[cuda,wandb] failed"
 uv pip install -q --python "$VENV/bin/python" awscli >>"$LOG" 2>&1 \
   || echo "[train.sh] awscli install failed; S3 mirroring disabled" | tee -a "$LOG"
+
+# Cross-pod resume: pull the previous pod's checkpoints + CSV before starting.
+# train.py --resume then continues locally (incl. the same W&B run via wandb_id).
+if [ "${RESUME_FROM_S3:-0}" = "1" ]; then
+  echo "[train.sh] pulling previous run from S3" | tee -a "$LOG"
+  s3 sync "s3://$S3_BUCKET/$S3_PREFIX/runs/$RUN_NAME/checkpoints/" \
+    "$REPO/checkpoints/$RUN_NAME/" || echo "[train.sh] no checkpoints on S3 (fresh run?)" | tee -a "$LOG"
+  s3 cp "s3://$S3_BUCKET/$S3_PREFIX/runs/$RUN_NAME/training.csv" \
+    "$REPO/training_logs/$RUN_NAME.csv" || true
+fi
 
 # A CPU-only JAX here would silently train ~100x slower while billing GPU
 # rates. Refuse to run unless a CUDA device is visible.
 "$VENV/bin/python" -c "import jax; ds=jax.devices(); print(ds); assert any(d.platform=='cuda' or 'gpu' in str(d).lower() for d in ds), 'no CUDA device'" \
   >>"$LOG" 2>&1 || fail "no CUDA device visible to JAX"
 
-# --- live S3 log mirror (background) ----------------------------------------
-live_mirror() {
-  while true; do sleep 300; s3 cp "$LOG" "$LIVE_KEY" || true; done
+# --- background S3 sync (replaces the old live-log-only mirror) -------------
+sync_loop() {
+  while true; do sleep "$SYNC_SECS"; sync_now; done
 }
-live_mirror &
-MIRROR_PID=$!
-trap 'kill $MIRROR_PID 2>/dev/null || true' EXIT
+sync_loop &
+SYNC_PID=$!
+trap 'kill $SYNC_PID 2>/dev/null || true' EXIT
 
 # --- the job ----------------------------------------------------------------
 CMD="$VENV/bin/python scripts/train.py --run-name \"$RUN_NAME\" ${TRAIN_ARGS:-}"
@@ -124,7 +134,7 @@ else
 fi
 echo "[train.sh] train.py exited with code $code" | tee -a "$LOG"
 
-kill $MIRROR_PID 2>/dev/null || true
+kill $SYNC_PID 2>/dev/null || true
 final_upload
 self_terminate
 exit "$code"

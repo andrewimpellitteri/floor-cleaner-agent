@@ -207,6 +207,32 @@ the trough.
 
 ## P1 — the deliverable
 
+### T3a · wandb — the one metric pair that matters `IN PROGRESS (another agent)`
+
+Not duplicating the implementation. Handing over the only non-obvious part, for
+whoever is wiring it up:
+
+**Plot `drained_kg` and `fraction_removed` on the same axes, and watch for them
+to DIVERGE.** That divergence is this project's characteristic failure and it is
+invisible in total reward.
+
+The policy can learn to CUT and then walk away. Breaking adhered grit loose pays
+immediately through the shaping term; carrying the slurry twenty feet to the
+trough pays much later and is much harder. A policy that does the first and
+neglects the second scores well on reward and on `fraction_removed` while
+leaving the floor covered in loose slurry — which is precisely the outcome the
+scripted baselines already fall into (see T1: adhered grit 2.40 → 0.33 kg, but
+1.54 kg left lying loose and only 1.06 kg actually drained).
+
+So: `fraction_removed` climbing while `drained_kg` flattens means stop the run.
+Third metric worth a panel is `worst_residual` — it is the thoroughness measure
+and the one that decides whether the floor is ever actually finished, since the
+mean goes quiet long before the worn lanes do.
+
+Two practical notes: `WANDB_API_KEY` is in `~/Documents/dev/4o_clone/.env`, and
+whatever wraps it should degrade to CSV rather than raise — a failed `wandb.init`
+must not kill a GPU run that has already been paid for.
+
 ### T3 · Training driver `DONE` → `scripts/train.py`
 `floorclean/ppo.py` already exposes `init_runner` and `make_chunk`. This is the
 outer loop only.
