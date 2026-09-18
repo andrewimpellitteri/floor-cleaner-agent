@@ -164,9 +164,19 @@ echo "[train.sh] LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >>"$LOG"
 uv pip list --python "$VENV/bin/python" 2>/dev/null | grep -iE "^(jax|nvidia-cusparse|nvidia-cublas|nvidia-cudnn)" >>"$LOG" 2>&1 || true
 
 # A CPU-only JAX here would silently train ~100x slower while billing GPU
-# rates. Refuse to run unless a CUDA device is visible.
-"$VENV/bin/python" -c "import jax; ds=jax.devices(); print(ds); assert any(d.platform=='cuda' or 'gpu' in str(d).lower() for d in ds), 'no CUDA device'" \
-  >>"$LOG" 2>&1 || fail "no CUDA device visible to JAX"
+# rates. Refuse to run unless an accelerator is actually in use.
+#
+# Test the BACKEND, not the device's spelling. JAX 0.11 reports
+# `CudaDevice(id=0)` with `platform == "gpu"`, so an earlier check for
+# `platform == "cuda" or "gpu" in str(device)` rejected a perfectly working
+# 4090 -- it matched neither the attribute nor the string. `default_backend()`
+# is the stable answer to "what will actually run this".
+"$VENV/bin/python" - >>"$LOG" 2>&1 <<'PY' || fail "no CUDA device visible to JAX"
+import jax
+backend = jax.default_backend()
+print(f"devices={jax.devices()} backend={backend}")
+assert backend != "cpu", f"JAX backend is {backend!r}, expected an accelerator"
+PY
 
 # --- background S3 sync (replaces the old live-log-only mirror) -------------
 sync_loop() {
