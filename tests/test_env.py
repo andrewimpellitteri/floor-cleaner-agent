@@ -178,7 +178,7 @@ def test_overshoot_possible():
         standoff=jnp.array(0.30),
         tilt=jnp.array(1.25),
         azimuth=jnp.array(-jnp.pi / 2),
-        potential=env._potential(fields),
+        potential=env._potential(fields, state.initial_mass),
     )
 
     def far_side(s):
