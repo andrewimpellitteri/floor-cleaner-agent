@@ -19,14 +19,32 @@ could quietly evaporate through numerical diffusion -- as it did in the previous
 version of this project -- the potential would fall for free and the agent would
 be paid for nothing. `tests/test_physics.py` is what keeps that honest.
 
-EPISODES ARE WINDOWS. Cleaning the whole bay takes 20-40 simulated minutes,
-which is far too long a horizon for credit assignment. An episode is instead a
-five-minute window, and `reset` starts the floor at a uniformly random point in
-the job -- fresh, half done, or down to the last stubborn worn-lane patches.
-A policy that only knew the opening move would score badly on most of that
-distribution, so the window objective still produces a technique that works end
-to end. `scripts/benchmark.py` then runs it to completion against the baselines,
-which is the number that actually answers the question.
+AN EPISODE IS A WHOLE JOB, NOT A WINDOW. It was a five-minute window while the
+modelled floor carried 40 lb of grit and took 20-40 minutes to clean, where that
+really was too long a horizon for credit assignment. Once the dirt loading was
+corrected to a realistic 20 g/m^2 the job became ~15 minutes, and the window
+turned into an active mistake: the objective is fast AND THOROUGH, thoroughness
+means getting every cell under the threshold, and that requires covering the
+whole floor -- which takes longer than the window did. So no policy could ever
+finish, the finish bonus was unreachable, and the thoroughness term barely
+moved. Measured over a five-minute window, a random policy and the best scripted
+sweep were indistinguishable in return, despite the sweep removing 23% more
+grit. `reset` still randomises how far along the job starts, so the policy sees
+fresh floors, half-done floors, and floors down to the last stubborn worn-lane
+patches -- but now it can actually finish them.
+
+THE POTENTIAL HAS TWO TERMS, and the second is not optional. Bulk mass is
+dominated by the easy 90%, which random flailing collects nearly as well as a
+systematic sweep. What separates techniques is the fraction of the floor still
+above the cleanliness threshold -- a saturating term that pays only for getting
+cells CLEAN, never for skimming the heaviest patches. See `_potential`.
+
+BEWARE OF RANKING POLICIES BY TOTAL RETURN. Shaping contributes (gamma-1)*Phi
+every step, which for a dirty floor (Phi < 0) is a positive drift far larger
+than genuine progress. PPO's advantage estimator subtracts it as a baseline so
+it does not harm training, but it swamps undiscounted return. Compare policies
+on the physical metrics -- fraction of cells clean, time to finish, grit
+delivered -- not on summed reward.
 
 TIME LIMITS ARE TRUNCATION, NOT TERMINATION. They are reported separately so
 the value function bootstraps through the cut-off. Conflating the two (which the
@@ -97,7 +115,19 @@ COST_DEPOSITED = 0.70
 COST_SUSPENDED = 0.55
 ALPHA_DISTANCE = 0.22  # per metre
 
-REWARD_SCALE = 12.0  # maps the shaping term into a sane numerical range
+# The two halves of "fastest cleaning while still being thorough". Transport is
+# the bulk mass still to move; thoroughness is the fraction of the floor still
+# above the cleanliness threshold. See `CleaningEnv._potential`.
+WEIGHT_TRANSPORT = 1.0
+WEIGHT_THOROUGHNESS = 1.0
+
+# Both potential terms are normalised, so a full clean is worth about
+# (1 + ALPHA_DISTANCE * mean distance) + 1 ~ 2.6 units of potential regardless
+# of the dirt loading. At this scale that is ~520 of reward against ~300 for the
+# five-minute window's elapsed-time cost, so finishing the floor is clearly
+# worth more than the time it takes, without the sparse finish bonus having to
+# carry the whole signal.
+REWARD_SCALE = 200.0
 TIME_COST = 1.0  # per second of simulated work -- the objective being minimised
 FINISH_BONUS = 400.0
 
@@ -106,7 +136,7 @@ class CleaningEnv:
     """Single-environment pure functions. Use `jax.vmap` for a batch."""
 
     def __init__(self, cfg: Config | None = None, obs_cfg: ObsConfig | None = None,
-                 discount: float = 0.997):
+                 discount: float = 0.999):
         self.cfg = cfg or Config()
         self.obs_cfg = obs_cfg or ObsConfig()
         # Discount for the potential-based shaping term F = gamma*Phi(s') - Phi(s).
@@ -139,15 +169,51 @@ class CleaningEnv:
         }
 
     # -- potential ---------------------------------------------------------
-    def _potential(self, fields) -> jnp.ndarray:
-        """Negative outstanding transport work, in kg-equivalents."""
+    def _potential(self, fields, initial_mass) -> jnp.ndarray:
+        """Negative outstanding work, as a fraction of the job.
+
+        TWO terms, because bulk mass alone does not describe this job.
+
+        `transport` is the mass still on the floor, weighted by how hard each
+        phase is to shift and by how far it has to travel. It is the obvious
+        term and it is not sufficient: most of the mass is the easy 90%, and a
+        policy flailing at random collects nearly as much of it as a systematic
+        sweep does. Measured over a five-minute window, random removed 8.1% and
+        the best scripted sweep 10.0% -- a real difference, but swamped.
+
+        `thoroughness` is the fraction of the floor still ABOVE the cleanliness
+        threshold, and it is what actually separates techniques. It saturates:
+        a cell four times over the threshold counts the same as one just over
+        it, so the term only pays for getting cells CLEAN, not for skimming the
+        heaviest patches. Random coverage cannot finish cells; systematic
+        coverage can. This is the "still being thorough" half of Andrew's
+        objective, and without it the reward cannot express it at all.
+
+        Both are normalised -- by the episode's starting mass, and by area -- so
+        the scale is invariant to the dirt loading. That matters: the loading
+        constant has already been corrected twice, and each time it silently
+        rescaled every reward in the run.
+
+        Still a strict potential: a function of the state alone (`initial_mass`
+        is carried in `EnvState`), so Ng et al.'s guarantee holds and the
+        optimal policy is unchanged.
+        """
         weighted = (
             COST_BOUND * fields.bound
             + COST_DEPOSITED * fields.deposited
             + COST_SUSPENDED * fields.suspended
         )
         work = weighted * (1.0 + ALPHA_DISTANCE * self.dist_to_trough)
-        return -jnp.sum(work) * self.cfg.floor.cell_area
+        transport = jnp.sum(work) * self.cfg.floor.cell_area / jnp.maximum(
+            initial_mass, 1e-6
+        )
+
+        residual = fields.bound + fields.deposited + fields.suspended
+        thoroughness = jnp.mean(
+            jnp.clip(residual / self.cfg.dirt.clean_threshold, 0.0, 1.0)
+        )
+
+        return -(WEIGHT_TRANSPORT * transport + WEIGHT_THOROUGHNESS * thoroughness)
 
     # -- reset -------------------------------------------------------------
     def reset(self, key: jax.Array) -> tuple[EnvState, Obs]:
@@ -171,6 +237,10 @@ class CleaningEnv:
         tip_x = jax.random.uniform(kx, (), minval=0.0, maxval=cfg.floor.length_x)
         tip_y = jax.random.uniform(ky, (), minval=0.0, maxval=cfg.floor.length_y)
 
+        # Includes the loose layer: a part-done floor's outstanding work is
+        # everything still on it, not just what is still stuck down.
+        initial_mass = jnp.sum(bound + deposited) * cfg.floor.cell_area
+
         state = EnvState(
             fields=fields,
             yield_stress=yield_stress,
@@ -181,8 +251,8 @@ class CleaningEnv:
             tilt=jnp.array(0.6),
             azimuth=jnp.array(0.0),
             step=jnp.array(0, dtype=jnp.int32),
-            potential=self._potential(fields),
-            initial_mass=jnp.sum(bound + deposited) * cfg.floor.cell_area,
+            potential=self._potential(fields, initial_mass),
+            initial_mass=initial_mass,
             water_used=jnp.array(0.0),
             key=k_next,
         )
@@ -202,6 +272,7 @@ class CleaningEnv:
         fields = initial_fields(cfg.floor.nx, cfg.floor.ny)._replace(
             bound=bound, h=initial_water(k_water, cfg, z)
         )
+        initial_mass = jnp.sum(bound) * cfg.floor.cell_area
         return EnvState(
             fields=fields,
             yield_stress=yield_stress,
@@ -212,8 +283,8 @@ class CleaningEnv:
             tilt=jnp.array(0.6),
             azimuth=jnp.array(0.0),
             step=jnp.array(0, dtype=jnp.int32),
-            potential=self._potential(fields),
-            initial_mass=jnp.sum(bound) * cfg.floor.cell_area,
+            potential=self._potential(fields, initial_mass),
+            initial_mass=initial_mass,
             water_used=jnp.array(0.0),
             key=k_next,
         )
@@ -375,7 +446,7 @@ class CleaningEnv:
             tilt=tilt,
             azimuth=azimuth,
             step=state.step + 1,
-            potential=self._potential(fields),
+            potential=self._potential(fields, state.initial_mass),
             initial_mass=state.initial_mass,
             water_used=state.water_used + wc.flow * dt,
             key=state.key,

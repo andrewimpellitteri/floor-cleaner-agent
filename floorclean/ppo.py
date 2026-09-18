@@ -50,7 +50,11 @@ class PPOConfig:
 
     lr: float = 3e-4
     anneal_lr: bool = True
-    gamma: float = 0.997  # 0.2 s per step: ~110 s of effective lookahead
+    # 0.2 s per step. 0.999 gives a ~1000-step (~3.5 min) effective horizon,
+    # which is what a 15-minute episode needs; 0.997 (~110 s) could not see far
+    # enough ahead to value pushing slurry the length of the bay.
+    # MUST match CleaningEnv(discount=...) -- the shaping term uses it.
+    gamma: float = 0.999
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
     ent_coef: float = 0.003

@@ -262,13 +262,22 @@ class SimConfig:
     # the binding one; gravity waves in a millimetre film are far slower.
     physics_substeps: int = 16
 
-    # An episode is a five-minute WINDOW of work, not a whole floor. Cleaning
-    # 34 m^2 to completion takes 20-40 minutes, which is far too long a horizon
-    # to assign credit over. Technique is local and repeatable, so the policy is
-    # trained on five-minute windows started from every phase of the job (see
-    # `env.reset`, which randomises how far along the floor already is) and is
-    # then evaluated to completion in `scripts/benchmark.py`.
-    max_steps: int = 1500  # 1500 * 0.20 s = 5 minutes
+    # An episode is a FULL JOB, not a window.
+    #
+    # It was a five-minute window when the modelled floor carried 40 lb of grit
+    # and took 20-40 min to clean, where that was far too long a horizon to
+    # assign credit over. At the corrected 20 g/m^2 loading the job is ~15 min,
+    # and the window became actively wrong: the objective is "fast AND
+    # thorough", thoroughness means getting every cell under threshold,
+    # and that requires covering the whole floor -- which takes longer than the
+    # window. So no policy could ever finish, the finish bonus was unreachable,
+    # and the thoroughness term barely moved. Measured over a 5 min window,
+    # random and the best scripted sweep were indistinguishable.
+    #
+    # `env.reset` still randomises how far along the job starts, so the policy
+    # sees fresh floors, half-done floors, and floors down to the last stubborn
+    # worn-lane patches -- but now it can actually finish them.
+    max_steps: int = 4500  # 4500 * 0.20 s = 15 minutes
 
     # Explicit advection is CFL-limited. Velocities are clipped to keep the
     # substep stable regardless of what the jet does.
