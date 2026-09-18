@@ -100,10 +100,29 @@ def _tree_where(mask, a, b):
 
 
 def init_runner(env: CleaningEnv, cfg: PPOConfig, rng: jax.Array) -> RunnerState:
-    rng, k_net, k_reset = jax.random.split(rng, 3)
+    rng, k_net, k_reset, k_stagger = jax.random.split(rng, 4)
 
     network = ActorCritic(action_dim=env.action_dim)
     env_state, obs = jax.vmap(env.reset)(jax.random.split(k_reset, cfg.num_envs))
+
+    # Stagger the episode clocks, once, at startup.
+    #
+    # Without this every environment starts at step 0 and truncates at
+    # max_steps together, so the whole batch marches through the job in
+    # lockstep: 4500 steps at 64 steps per update is ~70 updates, and the first
+    # smoke run's metrics duly rose for 45 updates and fell for the next 25 as
+    # all 512 envs reset at once. That is bad twice over -- it makes the
+    # learning curves unreadable (episode phase dominates policy quality), and
+    # it correlates every sample in the batch, which is exactly the variance
+    # that having 512 environments is supposed to buy away.
+    #
+    # `reset` already randomises how far through the JOB a floor is; this
+    # randomises where in the CLOCK each episode sits. Startup only: after the
+    # first truncation they stay spread out on their own.
+    start = jax.random.randint(k_stagger, (cfg.num_envs,), 0, env.cfg.sim.max_steps)
+    env_state = env_state._replace(step=start.astype(jnp.int32))
+    obs = jax.vmap(env._observe)(env_state)
+
     params = network.init(k_net, obs)
 
     if cfg.anneal_lr:
