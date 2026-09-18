@@ -201,6 +201,7 @@ def physics_substep(
     yield_stress: jnp.ndarray,
     water_source: jnp.ndarray,
     coverage: jnp.ndarray,
+    intensity: jnp.ndarray,
     p_normal: jnp.ndarray,
     tau_x: jnp.ndarray,
     tau_y: jnp.ndarray,
@@ -217,10 +218,39 @@ def physics_substep(
     susp = _advect_sediment(susp, state.h, qx, qy, fc.dx, fc.h_min, dt)
 
     # --- breaking ADHERED grit loose ---------------------------------------
-    # Only the jet's normal impingement can do this, and only where it lands,
-    # weighted by how much of the cell the impact patch actually covers.
-    excess_jet = jnp.maximum(p_normal - yield_stress, 0.0)
-    from_bound = jnp.minimum(dc.entrainment_rate * excess_jet * coverage * dt, bound)
+    # Only the jet's normal impingement can do this, and only where it lands.
+    #
+    # Two things have to be true at once and they pull against each other. The
+    # Gaussian wings of the patch sit below the adhesion threshold and must not
+    # cut; but the patch is far SMALLER than a grid cell (a 25 deg fan is about
+    # 4 mm thick against a 70 mm cell), so nothing about it can be evaluated at
+    # cell centres. Sampling the profile at the cell centre puts the sample ~10
+    # sigma off the patch, reads essentially zero, and stops the jet cutting at
+    # all -- while using the peak pressure everywhere instead lets the wings
+    # cut when they should not.
+    #
+    # Both are avoided by integrating analytically over the patch. For a
+    # Gaussian of peak P and threshold Y, the excess pressure integrated over
+    # the region where it exceeds the threshold has a closed form:
+    #
+    #   INT max(0, P*exp(-s/2) - Y) dA  =  A_patch * (P - Y - Y*ln(P/Y))
+    #
+    # (integrating to s_max = 2*ln(P/Y), where the profile drops to Y). So the
+    # effective excess is G = P - Y - Y*ln(P/Y), which falls smoothly to zero as
+    # P approaches Y and tends to P when P >> Y. Spreading that over cells with
+    # `coverage` -- which integrates to the physical patch area -- makes the
+    # total removal exactly right and independent of dx.
+    #
+    # NOTE: `intensity` (the true per-cell profile) is intentionally NOT used
+    # here -- the patch is far thinner than a cell, so per-cell sampling is a
+    # grid-alignment lottery. It is carried for render/diagnostics only.
+    ratio = p_normal / jnp.maximum(yield_stress, 1.0)
+    g_excess = jnp.where(
+        ratio > 1.0,
+        p_normal - yield_stress - yield_stress * jnp.log(jnp.maximum(ratio, 1.0)),
+        0.0,
+    )
+    from_bound = jnp.minimum(dc.entrainment_rate * g_excess * coverage * dt, bound)
 
     # --- sweeping up the LOOSE deposited layer ------------------------------
     # This responds to tangential stress: the film's own bed shear plus

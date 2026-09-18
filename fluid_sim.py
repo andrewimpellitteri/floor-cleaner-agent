@@ -2,6 +2,82 @@
 import numba
 import numpy as np
 
+
+@numba.njit
+def minmod(a, b):
+    if a * b <= 0:
+        return 0.0
+    else:
+        return a if abs(a) < abs(b) else b
+
+@numba.njit
+def flux_limited_advect_2d(field, velx, vely, dt, grid_size):
+    """
+    Advects a 2D field using a semi-Lagrangian method with a piecewise linear reconstruction 
+    and a minmod flux limiter. Boundary cells (first and last rows/columns) are left unchanged.
+    """
+    new_field = np.empty_like(field)
+    
+    # Copy boundary cells directly
+    for i in range(grid_size):
+        new_field[i, 0] = field[i, 0]
+        new_field[i, grid_size - 1] = field[i, grid_size - 1]
+    for j in range(grid_size):
+        new_field[0, j] = field[0, j]
+        new_field[grid_size - 1, j] = field[grid_size - 1, j]
+    
+    # Update interior cells only
+    for i in range(1, grid_size - 1):
+        for j in range(1, grid_size - 1):
+            # Compute departure point (assuming unit grid spacing)
+            x_dep = i - velx[i, j] * dt
+            y_dep = j - vely[i, j] * dt
+
+            # Clamp departure point for reconstruction to ensure indices are valid.
+            if x_dep < 1.0:
+                x_dep = 1.0
+            elif x_dep > grid_size - 2:
+                x_dep = grid_size - 2.0
+            if y_dep < 1.0:
+                y_dep = 1.0
+            elif y_dep > grid_size - 2:
+                y_dep = grid_size - 2.0
+
+            # Base indices and fractional parts
+            i0 = int(np.floor(x_dep))
+            j0 = int(np.floor(y_dep))
+            fx = x_dep - i0
+            fy = y_dep - j0
+
+            # Compute limited slopes in x and y directions at the base cell
+            slope_x = minmod(field[i0, j0] - field[i0 - 1, j0],
+                             field[i0 + 1, j0] - field[i0, j0])
+            slope_y = minmod(field[i0, j0] - field[i0, j0 - 1],
+                             field[i0, j0 + 1] - field[i0, j0])
+
+            # Reconstruct the field value at the departure point
+            new_field[i, j] = field[i0, j0] + slope_x * fx + slope_y * fy
+
+    return new_field
+
+
+@numba.njit
+def numba_advect_dirt_flux(dirt, velocity_x, velocity_y, dt, grid_size):
+    """
+    Advection of dirt using a predictor-corrector scheme with flux-limited advection.
+    The predictor uses the forward advection (using the given velocity),
+    while the corrector uses a backward advection (using the negative velocity).
+    The final dirt field is the average of both steps.
+    """
+    # Predictor: forward advection using current velocities
+    predicted_dirt = flux_limited_advect_2d(dirt, velocity_x, velocity_y, dt, grid_size)
+    # Corrector: backward advection using negative velocities
+    corrected_dirt = flux_limited_advect_2d(dirt, -velocity_x, -velocity_y, dt, grid_size)
+    
+    new_dirt = 0.5 * (predicted_dirt + corrected_dirt)
+    return new_dirt
+
+
 @numba.jit(nopython=True)
 def numba_diffuse_velocity(velocity_x, velocity_y, prev_velocity_x, prev_velocity_y, dt, viscosity, grid_size, incompressibility_iters):
     diff_coeff = dt * viscosity * (grid_size - 2) * (grid_size - 2)
@@ -136,7 +212,7 @@ class FluidSimulator:
         self.velocity_x, self.velocity_y, self.pressure = numba_project(self.velocity_x, self.velocity_y, self.pressure, self.grid_size, self.incompressibility_iters)
 
     def advect_dirt(self):
-        self.dirt = numba_advect_dirt(self.dirt, self.velocity_x, self.velocity_y, self.dt, self.grid_size, self.i, self.j)
+        self.dirt = numba_advect_dirt_flux(self.dirt, self.velocity_x, self.velocity_y, self.dt, self.grid_size)
 
 
     def step(self):
@@ -144,7 +220,26 @@ class FluidSimulator:
         self.prev_velocity_y = self.velocity_y.copy()
         self.diffuse_velocity()
         self.project()
+
+
+        reflection_coefficient = 0.999 # Damping factor, adjust as needed
+
+        # Reflective boundaries for velocity with damping
+        for i in range(self.grid_size):
+            # X-direction boundaries (left and right)
+            if self.velocity_x[i, 0] < 0:  # Trying to move left out of boundary
+                self.velocity_x[i, 0] = -reflection_coefficient * self.velocity_x[i, 0]
+            if self.velocity_x[i, self.grid_size - 1] > 0: # Trying to move right out of boundary
+                self.velocity_x[i, self.grid_size - 1] = -reflection_coefficient * self.velocity_x[i, self.grid_size - 1]
+
+        for j in range(self.grid_size):
+            # Y-direction boundaries (top and bottom)
+            if self.velocity_y[0, j] < 0:  # Trying to move up out of boundary
+                self.velocity_y[0, j] = -reflection_coefficient * self.velocity_y[0, j]
+            if self.velocity_y[self.grid_size - 1, j] > 0: # Trying to move down out of boundary
+                self.velocity_y[self.grid_size - 1, j] = -reflection_coefficient * self.velocity_y[self.grid_size - 1, j]
+
         self.advect_dirt()
-        self.velocity_x[0, :] = self.velocity_x[-1, :] = 0
-        self.velocity_y[:, 0] = self.velocity_y[:, -1] = 0
+        # self.velocity_x[0, :] = self.velocity_x[-1, :] = 0
+        # self.velocity_y[:, 0] = self.velocity_y[:, -1] = 0
 

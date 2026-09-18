@@ -29,10 +29,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from floorclean.baselines import BlastThenSweep, PushSweep
-from floorclean.config import Config, GPM
+from floorclean.config import Config
 from floorclean.env import CleaningEnv, EnvState
-from floorclean.geometry import episode_elevation, initial_dirt, initial_water
-from floorclean.physics import initial_fields
 
 # Column order of the per-step diagnostic vector packed inside the scan.
 DIAG_NAMES = (
@@ -67,29 +65,7 @@ def fresh_state(env: CleaningEnv, key: jax.Array) -> EnvState:
     Bypasses `reset`'s random job-progress: a completion run must start the
     whole job, not a random slice of one.
     """
-    cfg = env.cfg
-    k_dirt, k_z, k_water, k_next = jax.random.split(key, 4)
-
-    z = episode_elevation(k_z, cfg, env.floor)
-    bound, yield_stress = initial_dirt(k_dirt, cfg, env.floor)
-    fields = initial_fields(cfg.floor.nx, cfg.floor.ny)._replace(
-        bound=bound, h=initial_water(k_water, cfg, z)
-    )
-    return EnvState(
-        fields=fields,
-        yield_stress=yield_stress,
-        z=z,
-        tip_x=jnp.array(0.15),
-        tip_y=jnp.array(cfg.floor.length_y - 0.15),
-        standoff=jnp.array(0.4),
-        tilt=jnp.array(0.6),
-        azimuth=jnp.array(0.0),
-        step=jnp.array(0, dtype=jnp.int32),
-        potential=env._potential(fields),
-        initial_mass=jnp.sum(bound) * cfg.floor.cell_area,
-        water_used=jnp.array(0.0),
-        key=k_next,
-    )
+    return env.fresh_state(key)
 
 
 def run(env: CleaningEnv, policy, state: EnvState, total_steps: int, stride: int):

@@ -165,10 +165,18 @@ class DirtConfig:
     loosened slurry to the trough.
     """
 
-    # Areal loading of grit at the start, kg/m^2. A visibly dirty bay floor
-    # carries on the order of a few hundred grams per square metre.
-    load_mean: float = 0.30
-    load_std: float = 0.12
+    # Areal loading of grit at the start, kg/m^2.
+    #
+    # Anchored to Andrew's ~15 min for a floor that is "not crazy dirty". An
+    # earlier value of 0.30 put 18 kg -- 40 lb -- of grit on a 59 m^2 bay, which
+    # is a filthy floor, not a routine one, and it was the single biggest reason
+    # the simulated job ran about 4x long: single coverage of the bay takes
+    # ~15 min and lifts roughly a quarter of the load, so the loading sets the
+    # number of coverages needed and therefore the whole job time.
+    # 0.10 kg/m^2 is ~6 kg (13 lb) over the section: still visibly dirty.
+    # Raise it to model a bad day; `load_std` keeps it patchy either way.
+    load_mean: float = 0.10
+    load_std: float = 0.045
 
     # Yield stress holding grit to the floor, Pa. The bay is a grit-broadcast
     # epoxy (hangar-type) floor, so the anti-slip aggregate gives it real
@@ -223,16 +231,7 @@ class DirtConfig:
     # depth. More water on the floor carries dirt further per push. Andrew
     # confirmed exactly this -- how far a push carries "depends on standing
     # water" -- so this relationship must survive any recalibration.
-    #
-    # 0.3 mm/s is fine silt, around 10 um. That is what most floor grime is, and
-    # it gives ~2 m of travel in a 4 mm film under gravity alone and much more
-    # behind a jet, while still stranding within a foot on a nearly dry floor.
-    # An earlier value of 3 mm/s (coarse sand) made transport the binding
-    # constraint everywhere: the jet loosened plenty of grit and almost none of
-    # it ever reached the trough, so no technique could finish the floor.
-    # The genuinely coarse fraction -- sand off the anti-slip aggregate -- does
-    # strand, and is the obvious next refinement (a second settling class).
-    settling_velocity: float = 3.0e-4
+    settling_velocity: float = 0.003
 
     # Cleanliness threshold: areal loading below this counts as clean, kg/m^2.
     clean_threshold: float = 0.02

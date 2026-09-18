@@ -92,13 +92,22 @@ def run_episode(
     key: jax.Array,
     max_seconds: float = 2400.0,
     record_every: int = 25,
+    fresh: bool = False,
 ) -> EpisodeResult:
-    """Run one episode to completion (or to `max_seconds`) and record the trace."""
+    """Run one episode to completion (or to `max_seconds`) and record the trace.
+
+    `fresh=True` starts a uniformly dirty floor (`env.fresh_state`) -- required
+    for benchmark/completion times. The default starts at a random point
+    through the job, matching training windows.
+    """
     cfg = env.cfg
     total_steps = int(max_seconds / cfg.sim.control_dt)
     n_chunks = total_steps // record_every
 
-    state, _ = env.reset(key)
+    if fresh:
+        state = env.fresh_state(key)
+    else:
+        state, _ = env.reset(key)
     carry = policy.init(env, state)
     start_side = jnp.where(state.tip_y >= cfg.floor.trough_y, 1.0, -1.0)
     initial_mass = float(state.initial_mass)

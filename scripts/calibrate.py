@@ -168,7 +168,7 @@ def single_pass_removal(cfg, floor, standoff, speed, tilt=0.5):
         im = jet_impact(cfg, floor, jnp.array(x_fixed), jnp.array(tip_y),
                         jnp.array(standoff), jnp.array(tilt), jnp.array(-jnp.pi / 2))
         state = physics_substep(cfg, floor, state, ys, im.water_source, im.coverage,
-                                im.p_normal, im.tau_x, im.tau_y, dt)
+                                im.intensity, im.p_normal, im.tau_x, im.tau_y, dt)
 
     removed = start_mass - float(jnp.sum(state.bound)) * fc.cell_area
     swath = removed / (cfg.dirt.load_mean * travel)
@@ -214,7 +214,7 @@ def push_delivery(cfg, floor, standoff, tilt, speed, start_dist=3.0):
         im = jet_impact(cfg, floor, jnp.array(fc.length_x / 2), jnp.array(tip_y),
                         jnp.array(standoff), jnp.array(tilt), jnp.array(-jnp.pi / 2))
         state = physics_substep(cfg, floor, state, ys, im.water_source, im.coverage,
-                                im.p_normal, im.tau_x, im.tau_y, dt)
+                                im.intensity, im.p_normal, im.tau_x, im.tau_y, dt)
 
     delivered = float(state.drained) / start_mass
     seconds = n * dt

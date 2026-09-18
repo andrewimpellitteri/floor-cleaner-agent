@@ -116,9 +116,10 @@ def main():
         csv_f.write(",".join(CSV_COLUMNS) + "\n")
 
     def save(runner, update):
+        # force=True: one rolling checkpoint per run, overwritten each chunk.
         ckptr.save(ckpt_path, ocp.args.PyTreeSave(
             item=payload_template(runner, jnp.asarray(update))
-        ))
+        ), force=True)
 
     updates_total = ppo.num_updates
     print(f"{ppo.num_envs} envs x {ppo.num_steps} steps = {ppo.batch_size} per update, "

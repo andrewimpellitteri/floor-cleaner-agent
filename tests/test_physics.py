@@ -27,7 +27,7 @@ def _sealed(floor: Floor) -> Floor:
 
 def _zero_jet(shape):
     z = jnp.zeros(shape)
-    return z, z, jnp.array(0.0), z, z  # source, coverage, p_normal, tau_x, tau_y
+    return z, z, z, jnp.array(0.0), z, z  # source, coverage, intensity, p_normal, tau_x, tau_y
 
 
 def test_water_is_conserved_when_sealed():
@@ -38,12 +38,12 @@ def test_water_is_conserved_when_sealed():
     key = jax.random.PRNGKey(0)
     h0 = 2.0e-3 + 1.0e-3 * jax.random.uniform(key, shape)
     state = initial_fields(*shape)._replace(h=h0)
-    src, cov, p, tx, ty = _zero_jet(shape)
+    src, cov, inten, p, tx, ty = _zero_jet(shape)
     ys = jnp.full(shape, cfg.dirt.yield_mean)
 
     start = jnp.sum(state.h)
     for _ in range(200):
-        state = physics_substep(cfg, floor, state, ys, src, cov, p, tx, ty,
+        state = physics_substep(cfg, floor, state, ys, src, cov, inten, p, tx, ty,
                                 cfg.sim.physics_dt)
 
     rel = abs(float(jnp.sum(state.h) - start) / float(start))
@@ -74,7 +74,8 @@ def test_sediment_is_conserved():
                             jnp.array(0.9), jnp.array(-jnp.pi / 2))
         state = physics_substep(
             cfg, floor, state, ys, impact.water_source, impact.coverage,
-            impact.p_normal, impact.tau_x, impact.tau_y, cfg.sim.physics_dt)
+            impact.intensity, impact.p_normal, impact.tau_x, impact.tau_y,
+            cfg.sim.physics_dt)
 
     end = float(total_dirt(state, cfg)) + float(state.drained)
     rel = abs(end - start) / start
@@ -96,14 +97,14 @@ def test_water_runs_downhill_into_the_trough():
     assert float(jnp.sum(h)) > 0.0, "test patch landed outside the domain"
 
     state = initial_fields(*shape)._replace(h=h)
-    src, cov, p, tx, ty = _zero_jet(shape)
+    src, cov, inten, p, tx, ty = _zero_jet(shape)
     ys = jnp.full(shape, cfg.dirt.yield_mean)
 
     y_centroid_0 = float(jnp.sum(state.h * floor.y) / jnp.sum(state.h))
     # Sheet flow on a 1.5% grade runs at roughly 0.2 m/s, so 1.5 m of travel
     # needs on the order of 10 s of simulated time.
     for _ in range(1600):
-        state = physics_substep(cfg, floor, state, ys, src, cov, p, tx, ty,
+        state = physics_substep(cfg, floor, state, ys, src, cov, inten, p, tx, ty,
                                 cfg.sim.physics_dt)
 
     remaining = float(jnp.sum(state.h))
@@ -185,12 +186,12 @@ def test_stalled_slurry_redeposits():
     state = initial_fields(*shape)._replace(
         h=jnp.full(shape, 1.0e-3), suspended=jnp.full(shape, 0.1)
     )
-    src, cov, p, tx, ty = _zero_jet(shape)
+    src, cov, inten, p, tx, ty = _zero_jet(shape)
     # Adhesion irrelevant here; the film is still so nothing is re-entrained.
     ys = jnp.full(shape, 1e9)
 
     for _ in range(100):
-        state = physics_substep(cfg, floor, state, ys, src, cov, p, tx, ty,
+        state = physics_substep(cfg, floor, state, ys, src, cov, inten, p, tx, ty,
                                 cfg.sim.physics_dt)
 
     # It must land in the LOOSE layer, not re-bond to the epoxy: grit that has
@@ -229,20 +230,77 @@ def test_four_way_outflow_creates_no_water():
 
 
 def test_four_way_outflow_creates_no_sediment():
-    """Same as above for the sediment advection clamp (WORKBOARD B4)."""
-    from floorclean.physics import _advect_sediment
+    """Same as above for grit, through the full substep (WORKBOARD B4).
+
+    The sediment guarantee comes from the flow clip: if `flow_substep` hands
+    `_advect_sediment` face flows whose combined outflow exceeds the donor's
+    mass, the positivity clamp manufactures grit. An adversarial radial burst
+    over a loaded cell must conserve bound + deposited + suspended + drained.
+    """
     cfg = Config()
-    dx, dt, hm = cfg.floor.dx, cfg.sim.physics_dt, cfg.floor.h_min
-    nx = ny = 8
+    floor = _sealed(build_floor(cfg))
+    shape = (cfg.floor.nx, cfg.floor.ny)
+    cx, cy = shape[0] // 2, shape[1] // 2
 
-    h = jnp.full((nx, ny), 2e-3).at[4, 4].set(hm)
-    susp = jnp.zeros((nx, ny)).at[4, 4].set(0.1)
-    u_max = cfg.sim.cfl * dx / dt / 2.0
-    qv = u_max * hm
-    qx = jnp.zeros((nx + 1, ny)).at[5, 4].set(qv).at[4, 4].set(-qv)
-    qy = jnp.zeros((nx, ny + 1)).at[4, 5].set(qv).at[4, 4].set(-qv)
+    h = jnp.zeros(shape).at[cx, cy].set(2e-3)
+    susp = jnp.zeros(shape).at[cx, cy].set(0.5)
+    state = initial_fields(*shape)._replace(h=h, suspended=susp)
+    big = 5000.0  # Pa, saturates the clip on every face around the cell
+    tx = jnp.zeros(shape).at[cx + 1, cy].set(big).at[cx - 1, cy].set(-big)
+    ty = jnp.zeros(shape).at[cx, cy + 1].set(big).at[cx, cy - 1].set(-big)
+    src, cov, inten = jnp.zeros(shape), jnp.zeros(shape), jnp.zeros(shape)
+    p = jnp.array(0.0)
+    ys = jnp.full(shape, 1e9)  # nothing re-entrains; pure advection + settling
 
-    out = _advect_sediment(susp, h, qx, qy, dx, hm, dt)
-    assert float(jnp.sum(out)) <= float(jnp.sum(susp)) + 1e-9, (
-        f"advection manufactured grit: {float(jnp.sum(susp))} -> {float(jnp.sum(out))}"
-    )
+    start = float(total_dirt(state, cfg))
+    for _ in range(5):
+        state = physics_substep(cfg, floor, state, ys, src, cov, inten, p, tx, ty,
+                                cfg.sim.physics_dt)
+    end = float(total_dirt(state, cfg)) + float(state.drained)
+    rel = abs(end - start) / start
+    assert rel < 1e-6, f"clip manufactured grit: rel drift {rel:.2e}"
+
+
+def test_entrainment_integrates_patch_excess():
+    """Bound removal equals the analytic patch integral (WORKBOARD B1).
+
+    For a Gaussian peak P over a threshold Y, INT max(0, P*e - Y) dA over the
+    above-threshold region is exactly A_patch * (P - Y - Y*ln(P/Y)). Spread
+    over cells with `coverage` (which integrates to the physical patch area),
+    one substep must remove rate * G * sum(coverage)*cell_area * dt in total.
+    The old `max(P - Y, 0)` form overestimated this by ~3x at working heights
+    (it gave the wings full peak excess); a below-threshold jet must remove
+    nothing at all.
+    """
+    import math
+    cfg = Config()
+    floor = _sealed(build_floor(cfg))
+    shape = (cfg.floor.nx, cfg.floor.ny)
+
+    impact = jet_impact(cfg, floor, jnp.array(2.0), jnp.array(7.5),
+                        jnp.array(0.30), jnp.array(0.5), jnp.array(0.0))
+    peak = float(impact.p_normal)
+    assert peak > cfg.dirt.yield_mean, "test jet cannot cut at all"
+
+    def removed_after_one_step(yield_value):
+        state = initial_fields(*shape)._replace(
+            h=jnp.full(shape, 1.0e-3),
+            bound=jnp.full(shape, cfg.dirt.load_mean),
+        )
+        ys = jnp.full(shape, yield_value)
+        start = float(jnp.sum(state.bound)) * cfg.floor.cell_area
+        state = physics_substep(
+            cfg, floor, state, ys, impact.water_source, impact.coverage,
+            impact.intensity, impact.p_normal, impact.tau_x, impact.tau_y,
+            cfg.sim.physics_dt)
+        return start - float(jnp.sum(state.bound)) * cfg.floor.cell_area
+
+    Y = cfg.dirt.yield_mean
+    G = peak - Y - Y * math.log(peak / Y)
+    area = float(jnp.sum(jnp.asarray(impact.coverage))) * cfg.floor.cell_area
+    expected = cfg.dirt.entrainment_rate * G * area * cfg.sim.physics_dt
+    # 5e-3 tolerance: float32 accumulation on a 4e-4 kg quantity. The old
+    # max(P - Y, 0) form sits ~40% higher, far outside this band.
+    assert removed_after_one_step(Y) == pytest.approx(expected, rel=5e-3)
+    # Below threshold: not a gram moves.
+    assert removed_after_one_step(peak * 2.0) == pytest.approx(0.0, abs=1e-9)

@@ -55,6 +55,42 @@ person, not crazy dirty**. The simulated section is 4.2 m × 14 m = 59 m².
 minutes, and `scripts/calibrate.py` still reports a physically sensible
 single-pass table.
 
+#### Update — cutting is solved, TRANSPORT is the bottleneck
+
+After fixing the subgrid entrainment gate, the compromise wand angle, the
+`BlastThenSweep` state machine and the side-switching rule, `far_to_near` over
+30 simulated minutes now gives:
+
+| phase | start | end |
+|---|---|---|
+| adhered (`bound`) | ~2.40 | **0.33** |
+| loose (`deposited`) | ~0.50 | **1.54** |
+| delivered to trough | 0 | 1.06 |
+
+So the jet now cuts 86% of the adhered grit off the epoxy, and most of it then
+**sits on the floor as loose slurry instead of reaching the trough**. Time to
+clean is still `inf` within 30 min, and the gap is entirely transport.
+
+This is worth taking seriously rather than tuning away, because it is exactly
+what Andrew described unprompted: *"the dirt gets pushed without an opposing
+force so usually we do two agents."* The model reproducing that failure mode
+independently is evidence it has the mechanism right.
+
+Next steps, in order:
+1. Measure, do not guess: use `push_delivery` in `scripts/calibrate.py` to get
+   delivered-fraction vs standoff/tilt/speed on a WET floor (it currently probes
+   a near-dry one, which is not how the bay is worked).
+2. The likely physical lever is water depth, since transport length is
+   `u*h/v_settle`. A sweeping pass that walks with its own bow wave should carry
+   much further than one that outruns it — check whether `push_speed` is simply
+   above the wave speed, in which case the operator is walking away from their
+   own water.
+3. Only then consider `deposit_entrainment_rate` or `settling_velocity`.
+4. `near_to_far` currently regresses badly (bound 2.29 vs 0.33): with the new
+   `cross = wrapped & finished` rule it switches sides after finishing only its
+   first band, so it never completes its outward progression. Its side-switch
+   needs to wait until all bands are done, not all lanes in one band.
+
 #### Findings so far (2026-09-18) — read before touching any constant
 
 Transport is **fixed**; cutting is now the bottleneck, and the cause is a real
@@ -102,6 +138,31 @@ What this actually means:
    optimum standoff is very likely not "as close as possible", which is worth
    the study on its own.
 
+#### 2026-09-18, second probe (current physics: analytic-G entrainment, load 0.10)
+`run_to_completion.py --strategy far_to_near --seed 0 --max-minutes 40` from a
+fresh floor (5.38 kg start): **NOT CLEAN after 40 min** — worst residual stuck
+at 0.4–0.9 the whole run, 44% of cells clean, 2.44 kg drained. The stall is the
+worn lanes, and it is a threshold problem, not a rate problem. Effective
+excess G = P − Y − Y·ln(P/Y) by standoff/tilt (kPa):
+
+| wand | P | normal (2.5k) | lane (5.5k) | lane+ (8.5k) |
+|---|---|---|---|---|
+| 0.16 m / 0.22 rad (old blast) | 106 | 94.6 | 84.7 | 76.5 |
+| 0.40 m / 0.22 rad (new blast) | 18 | 10.9 | 6.3 | 3.3 |
+| 0.40 m / 0.55 rad (compromise) | 11 | 4.5 | 1.5 | 0.2 |
+
+The compromise angle delivers 0.2 kPa against the worst lanes — ~380× less
+than the close blast, functionally zero (30+ passes per lane). And the 0.40 m
+blast from point 3 above sits in the middle: width-matched but 23× weaker in
+the lanes than 0.16 m. So blast standoff is now a genuine two-sided trade —
+fan width vs lane-threshold punch — that only a timed comparison settles, and
+`BlastThenSweep` likely needs per-pass lane spacing (narrow blast lanes, wide
+sweep lanes) instead of one shared `lane_width`. Do not resolve this by
+lowering `worn_lane_boost`: the lanes are domain ground truth (ORIENTATION).
+Related: push delivery over 3 m is 10% dry / 40% on a 2.5 mm working film /
+69% at 6 mm — Andrew's "depends on standing water" reproduced exactly, so
+transport needs no knob; the sim starting wet is load-bearing, keep it.
+
 ### T2 · Rendering `DONE` → `floorclean/render.py`
 Needed *before* trusting any training run, not after.
 
@@ -123,13 +184,19 @@ the trough.
 
 ## P1 — the deliverable
 
-### T3 · Training driver `TODO` → `scripts/train.py`
+### T3 · Training driver `DONE` → `scripts/train.py`
 `floorclean/ppo.py` already exposes `init_runner` and `make_chunk`. This is the
 outer loop only.
 
 - Loop chunks, print metrics, checkpoint with `orbax`, resume from checkpoint.
 - Log to CSV (no wandb dependency — keep it runnable offline).
 - `tyro` CLI for config overrides.
+
+Implemented and CLI-verified; the chunk has not yet been executed at full size
+(512 envs needs the GPU box). Resume path restores params/opt-state/env/obs
+from a single pytree checkpoint.
+Smoke-verified on CPU 2026-09-18 (4 envs × 8 steps: 3 updates, CSV +
+checkpoint + `--resume` all OK, including the repeated-save `force` path).
 
 ### T4 · Benchmark — **this is the actual answer** `TODO` → `scripts/benchmark.py`
 The table that settles the argument. Depends on T1 and T3.
@@ -208,7 +275,7 @@ not import and `numba` is broken against the installed numpy. Delete once T4
 has produced results, not before — keep them reachable in git history for
 comparison.
 
-### T10 · RunPod training `TODO` → `scripts/runpod_launch.py`
+### T10 · RunPod training `DONE` → `scripts/runpod_launch.py`
 Adapt the launcher from `../4o_clone/scripts/runpod_launch.py` (GraphQL deploy,
 `terminateAfter` cost guard, S3 log mirroring — all proven).
 
@@ -219,6 +286,16 @@ Adapt the launcher from `../4o_clone/scripts/runpod_launch.py` (GraphQL deploy,
   pod needs no babysitting.
 - **Set `terminateAfter`.** Do not leave a pod running.
 
+Implemented 2026-09-18 (`scripts/runpod_launch.py` + `scripts/jobs/train.sh`):
+GraphQL deploy, mandatory terminateAfter (`--hours 0` is refused), wait-healthy
+startup check, `--status/--logs/--kill`, `--dry-run` with machine-readable
+stdout. Pod runs a CUDA 12.8 image, installs `.[cuda]` via uv, refuses to train
+unless JAX sees a CUDA device, streams checkpoints/CSV/logs to S3, and
+self-terminates; `--ref` defaults to the current branch and stale refs are
+refused. Verified with `--dry-run` and `--status` (auth works, nothing
+billing). Not yet launched: push the branch first — the pod clones origin,
+and `jax-rewrite` is still local-only.
+
 ### T11 · README rewrite `TODO`
 The current `README.md` describes the old implementation and is wrong in every
 particular.
@@ -227,33 +304,53 @@ particular.
 
 ## P0 — verified solver/baseline issues (run-checked 2026-09-18, CPU)
 
-Do not start T1 calibration until B1–B4 are resolved — each one moves the
-numbers T1 is supposed to anchor. Reproduction commands are single-step probes
-in `floorclean/physics.py` / `jet.py` / `baselines.py` (full `calibrate.py`
-does not finish on CPU; it timed out at 120 s).
+All resolved. T1 calibration may proceed -- but re-run `scripts/calibrate.py`
+first: B1 narrows the effective swath and B5 restores the transport length,
+so the single-pass table has moved. (Full `calibrate.py` does not finish on
+CPU; it timed out at 120 s. Reproduction probes were single-step.)
 
-### B1 · Entrainment uses peak-minus-yield instead of local-minus-yield `TODO` → `floorclean/physics.py:219`
+### B1 · DONE — entrainment gated by local pressure → `floorclean/physics.py`, `floorclean/jet.py`
 Code computes `max(p_peak − yield, 0) · coverage`; correct is
 `max(p_peak·exp(−r²) − yield, 0)`. Measured at 30 cm / 0.5 rad:
 8 cells entrain vs 4 physically justified, integrated weight 0.20 vs 0.07
 (~3× high). The `single_pass_removal` swath in `scripts/calibrate.py` —
 the exact table T1 calibrates against — absorbs this error.
+FIXED (final form, concurrent agent — verified here): for a Gaussian peak P
+over threshold Y, INT max(0, P·e − Y) dA over the above-threshold region is
+exactly A_patch·(P − Y − Y·ln(P/Y)), so the code spreads effective excess
+G = P − Y − Y·ln(P/Y) over cells with `coverage`. Total removal is exact and
+dx-independent; G falls smoothly to zero as P→Y and tends to P for P≫Y. The
+`intensity` field added to `JetImpact` in the first pass is kept as a
+diagnostic (true-footprint profile for render). Pinned by
+`test_entrainment_integrates_patch_excess` (pins the integral to 5e-3 plus a
+below-threshold zero). Note found while testing: Σcoverage·cell undercounts
+A_patch by ~1.6% on this grid (thin direction under-resolved) — absorbed in
+T1, do not chase it here.
 
-### B2 · Reward shaping discounts with γ=1, trainer uses γ=0.997 `TODO` → `floorclean/env.py:355`
+### B2 · DONE — shaping uses the trainer's discount → `floorclean/env.py`
 `F = Φ′ − Φ` in env vs `γ=0.997` in `ppo.py`. Measured `Φ₀=−30.5 kg-eq`:
-per-step bias `(1−γ)·Φ·SCALE ≈ −1.1` vs `TIME_COST·dt = −0.2` (5.5×),
-cumulative ≈ −1649 over an episode. Pass `γ` into the env or the Ng
+free reward `(γ−1)·Φ·SCALE ≈ +1.08/step` vs `TIME_COST·dt = −0.2` (5×),
+cumulative ≈ +1620 over an episode. Pass `γ` into the env or the Ng
 guarantee (which `tests/test_env.py::test_shaping_telescopes` pins with
 γ=1) does not cover what PPO actually optimises.
+FIXED: `CleaningEnv(discount=0.997)`, `F = γΦ′ − Φ` in `step`. Measured
+worse than first estimated -- with Φ < 0 the mismatch was a FREE reward of
++1.08/step (5× the time cost), not a penalty. `test_no_free_reward` now
+asserts parked shaping equals the known discount drizzle within tolerance;
+`test_env_discount_matches_trainer_gamma` pins env/PPO agreement so a
+future gamma change cannot silently re-break it.
 
-### B3 · `BlastThenSweep` sweep pass never runs `TODO` → `floorclean/baselines.py:224-249`
+### B3 · DONE — four-phase `BlastThenSweep` → `floorclean/baselines.py`
 Blast arrives at the trough → `next_phase=2.0`; sweeping starts already at
 `reached_trough` → `finished` is immediately true → lane advances after one
 0.2 s step. A 60-step physics run never saw phase 2.Needs a reposition
 between blast and sweep. Benchmarking this strategy as-is measures a slow
 blast pass, not two-pass technique.
+FIXED (concurrent agent, phase machine verified here by mock-state probe):
+reposition/blast/return/sweep with side crossing; 0→1→2→3→0 with the lane
+advancing only after the sweep reaches the trough.
 
-### B4 · 2D CFL clip allows 1.8·h outflow per substep (latent) `TODO` → `floorclean/physics.py:144-148`
+### B4 · DONE — 2D CFL clip halved + regression tests → `floorclean/physics.py`
 Per-face `|q| ≤ cfl·dx/dt·h_upwind` with `cfl=0.45` permits 4×0.45=1.8·h
 drain; the `maximum(h,0)` / `maximum(susp−dt·div,0)` clamps then create
 mass. Proven with adversarial 4-way 5000 Pa `tau`: `Σh` 0.0020→0.0027 in
@@ -261,25 +358,34 @@ one substep; sediment 0.10→0.18 (+80%). Realistic jets conserve to ~1e-7
 (200 sustained substeps, sealed) because Manning friction and the `0.5·dx`
 kernel clamp keep `|q|` below the clip — so fix is a guard (`/2` in 2D or
 per-cell outflow rescale + clip-hit counter test), not a behaviour change.
+FIXED: `u_max = cfl·dx/dt/2`, config comment corrected to ~1.3 m/s.
+`test_four_way_outflow_creates_no_water/sediment` fail pre-fix, pass post-fix.
 
-### B5 · Unvalidated 10× `settling_velocity` change `TODO` → `floorclean/config.py:235`
+### B5 · DONE — `settling_velocity` restored to 0.003 → `floorclean/config.py`
 `settling_velocity` is now `3.0e-4`; ORIENTATION and the committed physics
 say ~3 mm/s. Transport length `u·h/v` is 10× longer, which masks B1/B3 and
 pre-empts T1's prescribed knob order. Either revert or validate via
 `scripts/run_to_completion.py` + the calibrate single-pass table per the T1
 protocol — do not train through it.
+FIXED: reverted to 0.003 (ORIENTATION ground truth: a few mm/s, ~0.7 m
+transport in a 2 mm film). At 3e-4 the stranded-slurry mechanic behind the
+FarToNear/NearToFar debate nearly vanishes. T1 owns any re-tune, with
+benchmark evidence.
 
-### B6 · `test_overshoot_possible` fails on a test bug `TODO` → `tests/test_env.py:173`
+### B6 · `test_overshoot_possible` fails on a test bug `DONE` → `tests/test_env.py:173`
 `blob` masks with scalar `state.tip_y` (operator start, 13.85) instead of
 `env.floor.y`, so the deposited blob is empty (measured dep 0.0000 before
 and after 60 pushes; far side bit-identical 8.273950→8.273950 kg) and the
-assert fails. One-line fix: `jnp.abs(env.floor.y − (fc.trough_y + 0.6))`.
-Other 4 env tests pass (139 s CPU total).
+assert fails. FIXED: blob now keyed on `env.floor.y`, and the impact point is
+aimed onto the blob (tip at trough+1.4 so the 72° jet lands ~0.9 m ahead, ON
+the blob, then walks it across). Overshoot measured at ~2–4e-4 kg per hard
+push; test asserts > 2e-4. Full suite: 14 passed (physics + env).
 
 ### Audit of concurrent work (no action taken here)
 - `scripts/train.py` (T3, new): CSV key order matches `make_chunk` summary;
   suspected bug — `PyTreeCheckpointer.save` to the same path every chunk
   without `force=True`/step subdirs will raise on the second save.
+  RESOLVED: `force=True` added to both saves.
 - Old-stack edits (`cleaning_room.py`, `fluid_sim.py`, `main.py` modified,
   `fluid.py` deleted, all uncommitted) are pre-existing T9-retire material;
   untouched.

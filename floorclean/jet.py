@@ -45,9 +45,10 @@ from .geometry import Floor
 class JetImpact(NamedTuple):
     water_source: jnp.ndarray  # (nx, ny) film depth added, m/s
     coverage: jnp.ndarray  # (nx, ny) fraction of cell under the impact patch
+    intensity: jnp.ndarray  # (nx, ny) in [0,1], physical Gaussian profile
     tau_x: jnp.ndarray  # (nx, ny) tangential traction on the film, N/m^2
     tau_y: jnp.ndarray
-    p_normal: jnp.ndarray  # scalar, impingement pressure at the patch, Pa
+    p_normal: jnp.ndarray  # scalar, PEAK impingement pressure at the patch, Pa
     impact_x: jnp.ndarray  # scalar, m
     impact_y: jnp.ndarray
 
@@ -127,6 +128,16 @@ def jet_impact(
     # Fraction of each cell under the patch, capped at full coverage.
     coverage = jnp.minimum(kernel * area_phys, 1.0)
 
+    # Physical intensity profile on the TRUE footprint sigmas (not the
+    # rasterisation-widened ones): the local pressure in a cell is
+    # p_normal * intensity. Where the patch is thinner than a cell the two
+    # profiles differ by a large factor, and only this one may gate yielding --
+    # gating on the peak (B1) entrains the Gaussian wings where the local
+    # pressure is below the adhesion.
+    intensity = jnp.exp(
+        -0.5 * ((u / sigma_u_phys) ** 2 + (v / sigma_v_phys) ** 2)
+    )
+
     # Water delivery: the pump's whole flow lands inside the patch.
     water_source = wc.flow * kernel
 
@@ -144,6 +155,7 @@ def jet_impact(
     return JetImpact(
         water_source=water_source,
         coverage=coverage,
+        intensity=intensity,
         tau_x=tau_x,
         tau_y=tau_y,
         p_normal=p_normal,

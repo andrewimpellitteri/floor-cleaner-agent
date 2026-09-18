@@ -33,34 +33,12 @@ from floorclean.env import (
     CleaningEnv,
     EnvState,
 )
-from floorclean.geometry import episode_elevation, initial_dirt, initial_water
-from floorclean.physics import initial_fields, residual_map
+from floorclean.physics import residual_map
 
 
 def fresh_state(env: CleaningEnv, key: jax.Array) -> EnvState:
     """Fresh uniformly-dirty floor, operator at the wall (no random progress)."""
-    cfg = env.cfg
-    k_dirt, k_z, k_water, k_next = jax.random.split(key, 4)
-    z = episode_elevation(k_z, cfg, env.floor)
-    bound, yield_stress = initial_dirt(k_dirt, cfg, env.floor)
-    fields = initial_fields(cfg.floor.nx, cfg.floor.ny)._replace(
-        bound=bound, h=initial_water(k_water, cfg, z)
-    )
-    return EnvState(
-        fields=fields,
-        yield_stress=yield_stress,
-        z=z,
-        tip_x=jnp.array(0.15),
-        tip_y=jnp.array(cfg.floor.length_y - 0.15),
-        standoff=jnp.array(0.4),
-        tilt=jnp.array(0.6),
-        azimuth=jnp.array(0.0),
-        step=jnp.array(0, dtype=jnp.int32),
-        potential=env._potential(fields),
-        initial_mass=jnp.sum(bound) * cfg.floor.cell_area,
-        water_used=jnp.array(0.0),
-        key=k_next,
-    )
+    return env.fresh_state(key)
 
 
 def rollout(env: CleaningEnv, state: EnvState, actions):
@@ -80,8 +58,12 @@ def test_shaping_telescopes():
     potential is computed from the same conserved fields the reward is
     computed from -- a future edit that breaks mass conservation, or that
     recomputes Phi with different constants, shows up here.
+
+    Undiscounted env (discount=1.0) so the sum telescopes exactly; the
+    production discount is pinned to the trainer's gamma by
+    test_env_discount_matches_trainer_gamma below.
     """
-    env = CleaningEnv()
+    env = CleaningEnv(discount=1.0)
     state = fresh_state(env, jax.random.PRNGKey(3))
     phi0 = float(state.potential)
 
@@ -94,8 +76,19 @@ def test_shaping_telescopes():
     assert total_r + time_cost == pytest.approx(REWARD_SCALE * (phiT - phi0), rel=1e-4, abs=1e-6)
 
 
+def test_env_discount_matches_trainer_gamma():
+    """The shaping discount must equal the PPO discount (WORKBOARD B2).
+
+    F = gamma*Phi(s') - Phi(s) is policy-invariant only for the gamma the
+    optimiser discounts with. A silent mismatch biases every step by
+    (1-gamma)*Phi, which measured ~5x TIME_COST*dt.
+    """
+    from floorclean.ppo import PPOConfig
+    assert CleaningEnv().discount == pytest.approx(PPOConfig().gamma)
+
+
 def test_no_free_reward():
-    """Parked at max standoff: per-step reward is ~ -TIME_COST*dt, no more.
+    """Parked at max standoff: only the known discount drizzle plus time cost.
 
     The wand is held as high as the arm allows, where impingement pressure is
     under the adhesion of nearly all grit. Whatever tiny loosening remains at
@@ -112,12 +105,16 @@ def test_no_free_reward():
     parked = [(0.0, 0.0, 0.0, 1.0, 0.0)] * n
     final, total_r = rollout(env, state, parked)
 
+    # With discount gamma < 1, a parked wand earns the known discount drizzle
+    # SCALE*(gamma-1)*Phi0 per step (Phi < 0, so this is positive) -- part of
+    # the Ng-invariant transform, not farmable progress. Anything beyond it is.
+    drizzle = REWARD_SCALE * (env.discount - 1.0) * phi0
     time_cost = n * TIME_COST * env.cfg.sim.control_dt
     per_step = (total_r + time_cost) / n  # mean shaping only
     scale = abs(REWARD_SCALE * phi0)
-    assert per_step < 0.01 * scale / n
-    # And the time cost really is being charged.
-    assert total_r < -time_cost + 0.01 * scale / n
+    assert abs(per_step - drizzle) < 0.01 * scale / n
+    # And the time cost really is being charged on top of the drizzle.
+    assert abs((total_r - n * drizzle) + time_cost) < 0.01 * scale / n
 
 
 def test_truncation_is_not_termination():

@@ -43,9 +43,9 @@ import jax
 import jax.numpy as jnp
 
 from .config import Config
-from .geometry import Floor, build_floor, episode_elevation, initial_dirt, initial_water
+from .geometry import build_floor, episode_elevation, initial_dirt, initial_water
 from .jet import jet_impact
-from .physics import initial_fields, physics_substep, residual_map
+from .physics import FieldState, initial_fields, physics_substep, residual_map
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,9 +105,15 @@ FINISH_BONUS = 400.0
 class CleaningEnv:
     """Single-environment pure functions. Use `jax.vmap` for a batch."""
 
-    def __init__(self, cfg: Config | None = None, obs_cfg: ObsConfig | None = None):
+    def __init__(self, cfg: Config | None = None, obs_cfg: ObsConfig | None = None,
+                 discount: float = 0.997):
         self.cfg = cfg or Config()
         self.obs_cfg = obs_cfg or ObsConfig()
+        # Discount for the potential-based shaping term F = gamma*Phi(s') - Phi(s).
+        # MUST equal the trainer's gamma (PPOConfig.gamma): with gamma=1 here the
+        # per-step error (1-gamma)*Phi dwarfs TIME_COST (B2). Kept as a parameter
+        # (rather than imported) because ppo imports this module, not vice versa.
+        self.discount = discount
         self.floor = build_floor(self.cfg)
 
         # Distance from each cell to the trough: the transport cost map.
@@ -181,6 +187,36 @@ class CleaningEnv:
             key=k_next,
         )
         return state, self._observe(state)
+
+    def fresh_state(self, key: jax.Array) -> EnvState:
+        """A fresh, uniformly dirty floor, operator at the wall.
+
+        Bypasses `reset`'s random job-progress: completion runs (benchmark,
+        T1 calibration) must start the whole job, not a random slice of one.
+        Canonical copy -- tests and scripts must use this, not their own.
+        """
+        cfg = self.cfg
+        k_dirt, k_z, k_water, k_next = jax.random.split(key, 4)
+        z = episode_elevation(k_z, cfg, self.floor)
+        bound, yield_stress = initial_dirt(k_dirt, cfg, self.floor)
+        fields = initial_fields(cfg.floor.nx, cfg.floor.ny)._replace(
+            bound=bound, h=initial_water(k_water, cfg, z)
+        )
+        return EnvState(
+            fields=fields,
+            yield_stress=yield_stress,
+            z=z,
+            tip_x=jnp.array(0.15),
+            tip_y=jnp.array(cfg.floor.length_y - 0.15),
+            standoff=jnp.array(0.4),
+            tilt=jnp.array(0.6),
+            azimuth=jnp.array(0.0),
+            step=jnp.array(0, dtype=jnp.int32),
+            potential=self._potential(fields),
+            initial_mass=jnp.sum(bound) * cfg.floor.cell_area,
+            water_used=jnp.array(0.0),
+            key=k_next,
+        )
 
     def _apply_progress(self, key, bound, yield_stress):
         """Wind the floor forward to a random point in the job.
@@ -322,8 +358,9 @@ class CleaningEnv:
         def substep(fields, _):
             return physics_substep(
                 cfg, floor, fields, state.yield_stress,
-                impact.water_source, impact.coverage, impact.p_normal,
-                impact.tau_x, impact.tau_y, cfg.sim.physics_dt,
+                impact.water_source, impact.coverage, impact.intensity,
+                impact.p_normal, impact.tau_x, impact.tau_y,
+                cfg.sim.physics_dt,
             ), None
 
         fields, _ = jax.lax.scan(substep, state.fields, None, length=cfg.sim.physics_substeps)
@@ -349,10 +386,11 @@ class CleaningEnv:
         worst = jnp.max(residual)
         done_clean = worst < cfg.dirt.clean_threshold
 
-        # Strict potential-based shaping: gamma is folded in by the trainer's
-        # discount, and using gamma=1 here keeps this module independent of it.
-        # The difference is exact because mass is conserved.
-        shaping = REWARD_SCALE * (new_state.potential - state.potential)
+        # Strict potential-based shaping F = gamma*Phi(s') - Phi(s) (Ng et al.
+        # 1999): dense feedback that leaves the optimal policy unchanged. The
+        # gamma here must be the trainer's discount -- the difference telescopes
+        # to the true objective only then, and only because mass is conserved.
+        shaping = REWARD_SCALE * (self.discount * new_state.potential - state.potential)
         reward = shaping - TIME_COST * dt + FINISH_BONUS * done_clean
 
         truncated = new_state.step >= cfg.sim.max_steps

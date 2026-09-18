@@ -141,7 +141,7 @@ def train_model(
                 batch_size=64,
                 n_epochs=10,
                 gamma=0.99,
-                ent_coef=0.01,
+                ent_coef=0.03,
                 gae_lambda=0.95,
                 clip_range=0.2,
                 policy_kwargs=policy_kwargs,
@@ -159,7 +159,7 @@ def train_model(
                 batch_size=64,  # Add mini-batch training
                 n_epochs=10,  # Multiple PPO optimization epochs
                 gamma=0.99,  # Adjust if needed based on your reward structure
-                ent_coef=0.01,
+                ent_coef=0.03,
                 gae_lambda=0.95,
                 clip_range=0.2,
                 max_grad_norm=0.5,
@@ -177,7 +177,7 @@ def train_model(
             batch_size=64,  # Add mini-batch training
             n_epochs=10,  # Multiple PPO optimization epochs
             gamma=0.99,  # Adjust if needed based on your reward structure
-            ent_coef=0.01,
+            ent_coef=0.03,
             gae_lambda=0.95,
             clip_range=0.2,
             max_grad_norm=0.5,
@@ -319,7 +319,7 @@ def evaluate_model(
 
 
 if __name__ == "__main__":
-    RUN_TRAINING = True  # Control flag to enable/disable training
+    RUN_TRAINING = False  # Control flag to enable/disable training
     RUN_EVALUATION = True  # Control flag to enable/disable evaluation
 
     RUN_BEST_CHECKPOINT = False

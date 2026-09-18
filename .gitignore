@@ -1,4 +1,11 @@
 logs/
+*.log
+
+# Secrets must never be committable: the launch workflow sources credentials
+# from neighboring files, and the repo itself is public.
+.env
+.env.*
+.runpod_env
 
 __pycache__/
 

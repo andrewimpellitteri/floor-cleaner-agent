@@ -92,12 +92,21 @@ def _start_side(env: CleaningEnv, state: EnvState):
 
 
 def _side_is_done(env: CleaningEnv, state: EnvState, side, factor: float):
-    """Whether the half of the bay currently being worked is clean enough to leave."""
+    """Whether the half of the bay currently being worked is clean enough to leave.
+
+    Judged on the FRACTION OF CELLS still dirty, not the mean loading. The mean
+    drops below the cleanliness threshold long before the floor is actually
+    clean -- the stubborn worn-lane patches are a small share of the area and
+    barely move the average. Using the mean made every baseline declare both
+    sides finished at around 2.3 kg remaining and then ping-pong across the
+    trough doing nothing, which looked exactly like a physics plateau and was
+    not one.
+    """
     fc = env.cfg.floor
     residual = state.fields.bound + state.fields.deposited + state.fields.suspended
     on_side = jnp.where(side > 0, env.floor.y >= fc.trough_y, env.floor.y <= fc.trough_y)
-    mean_residual = jnp.sum(jnp.where(on_side, residual, 0.0)) / jnp.sum(on_side)
-    return mean_residual < factor * env.cfg.dirt.clean_threshold
+    dirty = (residual > env.cfg.dirt.clean_threshold) & on_side
+    return jnp.sum(dirty) < factor * 0.01 * jnp.sum(on_side)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,8 +126,13 @@ class PushSweep:
     lane_width: float = 0.18  # m stepped along the bay between passes
     segment: float = 1.75  # m of reach per band, when working outward
     standoff: float = 0.40
-    tilt: float = 0.95  # rad (~54 deg): enough normal stress to still cut,
-    #                     enough tangential to still push
+    # The compromise angle. It must be upright enough to actually CUT: at a
+    # 40 cm standoff, 0.55 rad (32 deg) delivers ~4x adhesion while still
+    # putting real tangential momentum into the slurry. An earlier default of
+    # 0.95 rad (54 deg) pushed well but delivered only 1.1x adhesion, so it
+    # swept the loose layer to the trough and left the adhered grit untouched
+    # -- the floor stopped getting cleaner after about two minutes.
+    tilt: float = 0.55
     push_speed: float = 0.45  # you push slower than you walk
 
     # A side counts as finished when its mean residual falls to this multiple
@@ -169,7 +183,13 @@ class PushSweep:
 
         # Cross to the other half of the bay once this one is clean, otherwise
         # the run can only ever finish half the floor.
-        cross = _side_is_done(env, state, carry.side, self.side_done_factor)
+        # Cross over once a full set of lanes has been covered, rather than
+        # waiting for this side to come clean. A side never reaches "clean" on
+        # one coverage -- the worn lanes need several -- so a cleanliness test
+        # means the operator stays on one half of the bay forever and can only
+        # ever finish 50% of the floor. Alternating after each full sweep is
+        # also what a person actually does.
+        cross = wrapped & finished
         side = jnp.where(cross, -carry.side, carry.side)
         lane_x = jnp.where(cross, 0.0, lane_x)
         segment = jnp.where(cross, 0.0, segment)
@@ -207,11 +227,18 @@ class BlastThenSweep(PushSweep):
     """
 
     name: str = "blast_then_sweep"
-    blast_standoff: float = 0.16
-    blast_tilt: float = 0.25  # nearly upright
+    # The blast standoff is chosen so the FAN WIDTH matches the lane spacing:
+    # at 40 cm and near-upright, the 25 deg fan is ~18 cm across. Holding the
+    # wand closer would hit harder but cut a strip narrower than the lane step,
+    # leaving uncut stripes between passes -- which barely shows up in total
+    # mass and is glaring in a render. There is pressure to spare here anyway
+    # (~7x adhesion, ~3x even in the worn lanes), so width is the thing worth
+    # buying with the standoff.
+    blast_standoff: float = 0.40
+    blast_tilt: float = 0.22  # nearly upright: all of the momentum into cutting
     blast_speed: float = 0.30  # slower: the cutting pass needs the dwell
     sweep_standoff: float = 0.35
-    sweep_tilt: float = 1.25  # laid well over
+    sweep_tilt: float = 1.25  # laid well over: all of it into pushing
 
     def act(self, env: CleaningEnv, state: EnvState, carry: SweepCarry):
         fc = env.cfg.floor
@@ -221,37 +248,62 @@ class BlastThenSweep(PushSweep):
         at_start = jnp.abs(state.tip_y - start_y) < 0.12
         reached_trough = jnp.abs(state.tip_y - end_y) < 0.12
 
-        # phase 0 = reposition, 1 = blasting pass, 2 = sweeping pass.
+        # Four phases, because BOTH working passes run inward and so the wand
+        # has to be walked back out between them:
+        #   0  reposition to the start of the lane   (wand lifted)
+        #   1  BLAST inward: upright, cutting        -> ends at the trough
+        #   2  return to the start                   (wand lifted)
+        #   3  SWEEP inward: laid over, pushing      -> ends at the trough
+        # An earlier three-phase version had the sweep target the trough while
+        # waiting on `at_start` to leave that phase, so on arrival it swept at
+        # the trough forever and never advanced a lane.
         phase = carry.phase
+        repositioning = jnp.abs(phase - 0.0) < 0.5
         blasting = jnp.abs(phase - 1.0) < 0.5
-        sweeping = jnp.abs(phase - 2.0) < 0.5
+        returning = jnp.abs(phase - 2.0) < 0.5
+        sweeping = jnp.abs(phase - 3.0) < 0.5
 
         next_phase = jnp.where(
-            blasting,
-            jnp.where(reached_trough, 2.0, 1.0),
+            repositioning, jnp.where(at_start, 1.0, 0.0),
             jnp.where(
-                sweeping,
-                jnp.where(at_start, 1.0, 2.0),  # sweep runs back out, then re-blast
-                jnp.where(at_start, 1.0, 0.0),
+                blasting, jnp.where(reached_trough, 2.0, 1.0),
+                jnp.where(
+                    returning, jnp.where(at_start, 3.0, 2.0),
+                    jnp.where(reached_trough, 0.0, 3.0),
+                ),
             ),
         )
+
         # A lane is done once its sweep has driven the slurry to the trough.
         finished = sweeping & reached_trough
-        next_phase = jnp.where(finished, 0.0, next_phase)
-
         lane_x = jnp.where(finished, carry.lane_x + self.lane_width, carry.lane_x)
         wrapped = lane_x > fc.length_x
         lane_x = jnp.where(wrapped, 0.0, lane_x)
         segment = jnp.where(wrapped & finished, carry.segment + 1.0, carry.segment)
         segment = jnp.minimum(segment, jnp.floor(fc.length_y * 0.5 / self.segment))
 
-        # Both working passes run inward; only the standoff/tilt differ.
-        target_y = jnp.where(phase > 0.5, end_y, start_y)
+        # Cross over once a full set of lanes has been covered, rather than
+        # waiting for this side to come clean. A side never reaches "clean" on
+        # one coverage -- the worn lanes need several -- so a cleanliness test
+        # means the operator stays on one half of the bay forever and can only
+        # ever finish 50% of the floor. Alternating after each full sweep is
+        # also what a person actually does.
+        cross = wrapped & finished
+        side = jnp.where(cross, -carry.side, carry.side)
+        lane_x = jnp.where(cross, 0.0, lane_x)
+        segment = jnp.where(cross, 0.0, segment)
+        next_phase = jnp.where(cross, 0.0, next_phase)
+        carry = carry._replace(side=side)
+        start_y = self._pass_start_y(env, carry)
+
+        # Working passes head for the trough; the two travel phases head out.
+        working = blasting | sweeping
+        target_y = jnp.where(working, end_y, start_y)
         speed = jnp.where(blasting, self.blast_speed,
                           jnp.where(sweeping, self.push_speed, 1.0))
         ax, ay = _walk(env, state, lane_x, target_y, speed)
 
-        target_az = jnp.where(carry.side > 0, -jnp.pi / 2, jnp.pi / 2)
+        target_az = jnp.where(side > 0, -jnp.pi / 2, jnp.pi / 2)
         standoff = jnp.where(blasting, self.blast_standoff,
                              jnp.where(sweeping, self.sweep_standoff,
                                        env.cfg.washer.standoff_max))
@@ -264,7 +316,7 @@ class BlastThenSweep(PushSweep):
             _tilt(env, tilt),
         ])
         return SweepCarry(lane_x=lane_x, segment=segment,
-                          phase=next_phase, side=carry.side), action
+                          phase=next_phase, side=side), action
 
 
 @dataclasses.dataclass(frozen=True)
