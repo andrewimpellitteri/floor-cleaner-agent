@@ -207,7 +207,7 @@ the trough.
 
 ## P1 — the deliverable
 
-### T3a · wandb — the one metric pair that matters `IN PROGRESS (another agent)`
+### T3a · wandb — the one metric pair that matters `DONE`
 
 Not duplicating the implementation. Handing over the only non-obvious part, for
 whoever is wiring it up:
@@ -232,6 +232,13 @@ mean goes quiet long before the worn lanes do.
 Two practical notes: `WANDB_API_KEY` is in `~/Documents/dev/4o_clone/.env`, and
 whatever wraps it should degrade to CSV rather than raise — a failed `wandb.init`
 must not kill a GPU run that has already been paid for.
+
+Wired 2026-09-18: `ppo.py` summary + `train.py` CSV now carry `drained_kg`,
+`adhered_kg`, `deposited_kg`, `suspended_kg` per update (same dict feeds W&B,
+so pinning them to one dashboard panel is one click — that is the divergence
+panel). Eval stills are wrapped so render failures degrade to curves-only,
+and `wandblog` never raises by construction. Verified offline end-to-end
+(curves + stills + final mp4); full suite 22 passed.
 
 ### T3 · Training driver `DONE` → `scripts/train.py`
 `floorclean/ppo.py` already exposes `init_runner` and `make_chunk`. This is the

@@ -69,7 +69,13 @@ CSV_COLUMNS = [
     "update", "timesteps", "reward_mean", "episodes", "finished_clean",
     "fraction_removed", "worst_residual", "fraction_clean",
     "standoff_mean", "tilt_mean", "policy_loss", "value_loss",
-    "entropy", "approx_kl", "clip_fraction", "seconds",
+    "entropy", "approx_kl", "clip_fraction",
+    # T3a — the cut-and-abandon panel: adhered falling while deposited climbs
+    # and drained stays flat is the characteristic failure, invisible in
+    # reward. Logged everywhere (CSV + W&B) so pinning them to one dashboard
+    # panel is one click.
+    "drained_kg", "adhered_kg", "deposited_kg", "suspended_kg",
+    "seconds",
 ]
 
 
@@ -92,9 +98,9 @@ def main():
     tcfg = tyro.cli(TrainConfig)
     ppo = tcfg.ppo
 
-    ckpt_dir = pathlib.Path(tcfg.checkpoint_dir) / tcfg.run_name
+    ckpt_dir = pathlib.Path(tcfg.checkpoint_dir).expanduser().resolve() / tcfg.run_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = pathlib.Path(tcfg.csv_path)
+    csv_path = pathlib.Path(tcfg.csv_path).expanduser().resolve()
     csv_path.mkdir(parents=True, exist_ok=True)
     csv_path = csv_path / f"{tcfg.run_name}.csv"
 
@@ -203,29 +209,35 @@ def main():
                 save(runner, update)
 
             # Greedy-eval stills on a fixed floor, so the images show learning
-            # rather than floor lottery. Skipped entirely when W&B is off.
+            # rather than floor lottery. Skipped entirely when W&B is off, and
+            # never allowed to kill a paid-for run: any failure here degrades
+            # to curves-only for this eval.
             if wlog.enabled and tcfg.wandb_every_chunks > 0 and (
                     update // ppo.updates_per_chunk) % tcfg.wandb_every_chunks == 0:
-                media_dir.mkdir(parents=True, exist_ok=True)
-                policy = NeuralPolicy(runner.train_state.params, env.action_dim)
-                res = run_episode(env, policy,
-                                  jax.random.PRNGKey(10_000 + eval_idx),
-                                  max_seconds=tcfg.eval_seconds,
-                                  record_every=25)
-                last_states = res.states
-                n_states = len(res.states)
-                for name, frac in (("start", 0.0), ("mid", 0.5), ("end", 0.999)):
-                    still = (media_dir /
-                             f"eval{eval_idx:04d}_{name}.png")
-                    save_still(env, res.states[min(n_states - 1,
-                                                   int(frac * n_states))],
-                               str(still))
-                    wlog.log_image(str(still),
-                                   caption=f"eval {eval_idx} {name}: "
-                                           f"{res.seconds_to_clean:.0f}s to clean, "
-                                           f"{res.final_remaining_kg:.2f}kg left",
-                                   step=update)
-                eval_idx += 1
+                try:
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    policy = NeuralPolicy(runner.train_state.params, env.action_dim)
+                    res = run_episode(env, policy,
+                                      jax.random.PRNGKey(10_000 + eval_idx),
+                                      max_seconds=tcfg.eval_seconds,
+                                      record_every=25)
+                    last_states = res.states
+                    n_states = len(res.states)
+                    for name, frac in (("start", 0.0), ("mid", 0.5), ("end", 0.999)):
+                        still = (media_dir /
+                                 f"eval{eval_idx:04d}_{name}.png")
+                        save_still(env, res.states[min(n_states - 1,
+                                                       int(frac * n_states))],
+                                   str(still))
+                        wlog.log_image(str(still),
+                                       caption=f"eval {eval_idx} {name}: "
+                                               f"{res.seconds_to_clean:.0f}s to clean, "
+                                               f"{res.final_remaining_kg:.2f}kg left",
+                                       step=update)
+                    eval_idx += 1
+                except Exception as e:
+                    print(f"[!] eval renders failed ({type(e).__name__}: {e}); "
+                          f"continuing curves-only")
     except KeyboardInterrupt:
         print("interrupted -- saving")
     finally:

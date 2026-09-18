@@ -158,6 +158,12 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
                 "standoff": info["standoff"],
                 "tilt": info["tilt"],
                 "drained_kg": info["drained_kg"],
+                # Phase masses (T3a): cut-and-abandon shows as adhered
+                # falling while deposited climbs and drained stays flat --
+                # invisible in total reward, so it needs its own curves.
+                "adhered_kg": info["adhered_kg"],
+                "deposited_kg": info["deposited_kg"],
+                "suspended_kg": info["suspended_kg"],
             }
             return RunnerState(train_state, env_state, obs, rng), (transition, metrics)
 
@@ -243,6 +249,10 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             "fraction_clean": metrics["fraction_clean"].mean(),
             "standoff_mean": metrics["standoff"].mean(),
             "tilt_mean": metrics["tilt"].mean(),
+            "drained_kg": metrics["drained_kg"].mean(),
+            "adhered_kg": metrics["adhered_kg"].mean(),
+            "deposited_kg": metrics["deposited_kg"].mean(),
+            "suspended_kg": metrics["suspended_kg"].mean(),
             "policy_loss": pg.mean(),
             "value_loss": v_loss.mean(),
             "entropy": ent.mean(),
