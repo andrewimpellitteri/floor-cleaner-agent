@@ -89,6 +89,24 @@ class FloorConfig:
     initial_film_std: float = 1.2e-3
     max_ponding: float = 0.020  # m, depth a flat spot can hold
 
+    # Ambient water reaching the floor from the fabric rinsing going on in the
+    # same bay. Andrew: the hoses are for the awnings, not the floor, but "the
+    # floor is already quite wet usually" -- and he works in waders.
+    #
+    # THIS IS NOW THE DOMINANT UNCERTAINTY IN THE MODEL, because transport
+    # length is u*h/v_settle and h is set almost entirely by supply. The bay
+    # drains fast: sustaining a film of depth h over this section takes roughly
+    # 57.2 * h^(5/3) m^3/s -- about 28 gpm for 2 mm and 90 gpm for 4 mm. One
+    # wand at 4 gpm sustains only ~0.85 mm, where the bed shear (0.125 Pa)
+    # barely clears the 0.1 Pa needed to move silt. So a lone operator cuts grit
+    # loose faster than the floor can carry it away and it strands behind them.
+    #
+    # That is a PREDICTION, not a fudge. It says water is a shared resource and
+    # that operators should help each other superlinearly -- which is exactly
+    # the 1-4 people Andrew describes working the bay together, and is worth
+    # testing directly in T7 rather than assuming.
+    ambient_inflow_gpm: float = 8.0
+
     @property
     def nx(self) -> int:
         return int(round(self.length_x / self.dx))
@@ -100,6 +118,11 @@ class FloorConfig:
     @property
     def cell_area(self) -> float:
         return self.dx * self.dx
+
+    @property
+    def ambient_inflow(self) -> float:
+        """Ambient rinse inflow, m^3/s over the whole section."""
+        return self.ambient_inflow_gpm * GPM
 
 
 @dataclasses.dataclass(frozen=True)

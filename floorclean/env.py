@@ -423,10 +423,18 @@ class CleaningEnv:
 
         floor = self.floor._replace(z=state.z)
 
+        # Ambient rinse water from the fabric washing going on in the same bay,
+        # spread evenly. Tiny per unit area, but it is what keeps a film on the
+        # slab between passes, and transport length scales with film depth --
+        # see FloorConfig.ambient_inflow_gpm, now the model's dominant
+        # uncertainty.
+        ambient = cfg.floor.ambient_inflow / (cfg.floor.length_x * cfg.floor.length_y)
+        water_source = impact.water_source + ambient
+
         def substep(fields, _):
             return physics_substep(
                 cfg, floor, fields, state.yield_stress,
-                impact.water_source, impact.coverage, impact.intensity,
+                water_source, impact.coverage, impact.intensity,
                 impact.p_normal, impact.tau_x, impact.tau_y,
                 cfg.sim.physics_dt,
             ), None
