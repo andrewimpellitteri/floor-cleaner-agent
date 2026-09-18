@@ -134,6 +134,35 @@ if [ "${RESUME_FROM_S3:-0}" = "1" ]; then
     "$REPO/training_logs/$RUN_NAME.csv" || true
 fi
 
+# --- make the pip-installed CUDA libraries win ------------------------------
+# JAX's cuda12 plugin ships its own CUDA via the nvidia-*-cu12 wheels, but the
+# base image (nvidia/cuda:12.8.1-runtime) puts its own, OLDER CUDA on
+# LD_LIBRARY_PATH. The image's libraries then shadow the wheels and the plugin
+# fails its version check with "The cuSPARSE library was not found", JAX falls
+# back to CPU, and the guard below aborts the run. That is exactly how the
+# first smoke launch died.
+#
+# Prepending the wheel directories fixes it without fighting the image.
+NVLIBS="$("$VENV/bin/python" - <<'PY' 2>/dev/null || true
+import glob, os
+try:
+    import nvidia
+except ImportError:
+    raise SystemExit(0)
+root = os.path.dirname(nvidia.__file__)
+print(":".join(sorted(glob.glob(os.path.join(root, "*", "lib")))))
+PY
+)"
+if [ -n "$NVLIBS" ]; then
+  export LD_LIBRARY_PATH="$NVLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  echo "[train.sh] prepended $(echo "$NVLIBS" | tr ':' '\n' | wc -l) nvidia wheel lib dirs" | tee -a "$LOG"
+else
+  echo "[train.sh] WARNING: no nvidia-*-cu12 wheels found; relying on image CUDA" | tee -a "$LOG"
+fi
+# Diagnostics: if the guard below still trips, these say why.
+echo "[train.sh] LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >>"$LOG"
+uv pip list --python "$VENV/bin/python" 2>/dev/null | grep -iE "^(jax|nvidia-cusparse|nvidia-cublas|nvidia-cudnn)" >>"$LOG" 2>&1 || true
+
 # A CPU-only JAX here would silently train ~100x slower while billing GPU
 # rates. Refuse to run unless a CUDA device is visible.
 "$VENV/bin/python" -c "import jax; ds=jax.devices(); print(ds); assert any(d.platform=='cuda' or 'gpu' in str(d).lower() for d in ds), 'no CUDA device'" \
