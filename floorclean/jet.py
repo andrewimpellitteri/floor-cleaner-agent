@@ -59,6 +59,35 @@ class JetImpact(NamedTuple):
 WALL_JET_COEFF = 0.35
 
 
+def jet_peak_pressure(
+    cfg: Config,
+    standoff: jnp.ndarray,
+    tilt: jnp.ndarray,
+) -> jnp.ndarray:
+    """Peak impingement pressure, scalar-only (no grid work).
+
+    Bit-identical to `jet_impact(...).p_normal`: same ops in the same order.
+    The observation needs only this number, so calling the full kernel here
+    would burn two full-grid exps per env per step for nothing.
+    """
+    wc = cfg.washer
+
+    cos_t = jnp.maximum(jnp.cos(tilt), jnp.cos(wc.tilt_max))
+    slant = standoff / cos_t
+    v_local = wc.jet_velocity * jnp.exp(-slant / wc.velocity_decay_length)
+    momentum = cfg.water_density * wc.flow * v_local  # N
+
+    width = 2.0 * slant * jnp.tan(wc.fan_angle * 0.5)
+    thickness = wc.fan_thickness_0 + 2.0 * slant * jnp.tan(wc.fan_spread_angle * 0.5)
+    thickness = thickness / cos_t
+
+    sigma_u_phys = jnp.maximum(width * 0.25, 1e-4)
+    sigma_v_phys = jnp.maximum(thickness * 0.25, 1e-4)
+    area_phys = 2.0 * jnp.pi * sigma_u_phys * sigma_v_phys
+
+    return momentum * cos_t / area_phys
+
+
 def jet_impact(
     cfg: Config,
     floor: Floor,

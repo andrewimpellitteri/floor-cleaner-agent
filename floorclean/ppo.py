@@ -139,14 +139,35 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             env_state, obs, reward, terminated, truncated, info = env_step(env_state, action)
 
             # Bootstrap through the time limit. `obs` here is still the real
-            # final observation -- the reset has not happened yet.
-            _, _, final_value = network.apply(train_state.params, obs)
-            reward = reward + cfg.gamma * final_value * truncated * (1.0 - terminated)
+            # final observation -- the reset has not happened yet. The extra
+            # forward is skipped unless some env actually truncated: with
+            # 1500-step episodes it fires on ~1/3 of rollout steps, and the
+            # physics dwarfs the network anyway.
+            def with_bootstrap(_):
+                _, _, final_value = network.apply(train_state.params, obs)
+                return reward + cfg.gamma * final_value * truncated * (1.0 - terminated)
+
+            def no_bootstrap(_):
+                return reward
+
+            reward = jax.lax.cond(
+                jnp.any(truncated & ~terminated), with_bootstrap, no_bootstrap, None
+            )
 
             done = jnp.logical_or(terminated, truncated)
-            reset_state, reset_obs = env_reset(jax.random.split(k_reset, cfg.num_envs))
-            env_state = _tree_where(done, reset_state, env_state)
-            obs = _tree_where(done, reset_obs, obs)
+            # Resets run every step in the naive version and cost ~10% of a
+            # step (FFTs, blur, quantile over the whole batch) while being
+            # discarded whenever nothing finished. Compute them only when at
+            # least one env is done; the select below is then a no-op copy.
+            def do_reset(_):
+                reset_state, reset_obs = env_reset(jax.random.split(k_reset, cfg.num_envs))
+                return (_tree_where(done, reset_state, env_state),
+                        _tree_where(done, reset_obs, obs))
+
+            def no_reset(_):
+                return env_state, obs
+
+            env_state, obs = jax.lax.cond(jnp.any(done), do_reset, no_reset, None)
 
             transition = Transition(
                 done=done, action=action, value=value, reward=reward,

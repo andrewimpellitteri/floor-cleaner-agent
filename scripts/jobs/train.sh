@@ -147,6 +147,18 @@ sync_loop &
 SYNC_PID=$!
 trap 'kill $SYNC_PID 2>/dev/null || true' EXIT
 
+# --- XLA/GPU execution env (perf notes 2026-09-18, WORKBOARD T10) -----------
+# The chunk is memory-bandwidth-bound stencil code on one GPU: no collectives,
+# no big matmuls, so Triton-GEMM/NCCL/PGLE flags do not apply. These do:
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_MEM_FRACTION:-0.9}"
+export JAX_LOG_COMPILES=1
+# Scan-heavy loop: overlap + fewer kernel launches. Revisit against a timed
+# baseline if the workload shape changes materially.
+export XLA_FLAGS="${XLA_FLAGS:-} --xla_gpu_enable_while_loop_double_buffering=true --xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL"
+# Persistent compilation cache: recompiling the training chunk every pod start
+# costs minutes. Ephemeral disk still pays off across restarts in one pod life.
+export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-/tmp/jax_cache}"
+
 # --- the job ----------------------------------------------------------------
 CMD="$VENV/bin/python scripts/train.py --run-name \"$RUN_NAME\" ${TRAIN_ARGS:-}"
 echo "[train.sh] $CMD" | tee -a "$LOG"

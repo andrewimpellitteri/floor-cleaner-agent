@@ -62,7 +62,7 @@ import jax.numpy as jnp
 
 from .config import Config
 from .geometry import build_floor, episode_elevation, initial_dirt, initial_water
-from .jet import jet_impact
+from .jet import jet_impact, jet_peak_pressure
 from .physics import FieldState, initial_fields, physics_substep, residual_map
 
 
@@ -383,10 +383,7 @@ class CleaningEnv:
         return Obs(global_map=global_map, local_map=local_map, vector=vector)
 
     def _current_pressure(self, state: EnvState) -> jnp.ndarray:
-        return jet_impact(
-            self.cfg, self.floor, state.tip_x, state.tip_y,
-            state.standoff, state.tilt, state.azimuth,
-        ).p_normal
+        return jet_peak_pressure(self.cfg, state.standoff, state.tilt)
 
     # -- step --------------------------------------------------------------
     def step(self, state: EnvState, action: jnp.ndarray):
