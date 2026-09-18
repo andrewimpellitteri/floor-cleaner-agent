@@ -56,6 +56,33 @@ final_upload() {
   [ -f "$REPO/training_logs/$RUN_NAME.csv" ] && s3 cp "$REPO/training_logs/$RUN_NAME.csv" "$dest/training.csv" || true
 }
 
+prune_snapshots() {
+  # S3-cost control: snapshots exist for model selection, but only best-eval
+  # + last are worth keeping. Everything else is deleted locally and mirrored
+  # away with --delete, so steady-state S3 per run is rolling + 2 snapshots
+  # (~0.7 GB, ~$0.02/mo) instead of unbounded growth across seeds and ablations.
+  # The rolling `state` checkpoint (the resume point) is never touched.
+  # NOTE: one `local` per line -- `local a=X b=$a/...` expands $a before
+  # assigning it (all words expand first), silently yielding snapdir=/snapshots.
+  local base="$REPO/checkpoints/$RUN_NAME"
+  local snapdir="$base/snapshots"
+  [ -d "$snapdir" ] || return 0
+  local best="" last="" d keep
+  [ -f "$base/BEST_UPDATE" ] && best=$(awk '{printf "%06d", $1}' "$base/BEST_UPDATE" 2>/dev/null)
+  last=$(ls "$snapdir" 2>/dev/null | grep -E "^update_[0-9]+$" | sort | tail -1 | sed 's/update_//')
+  for d in "$snapdir"/update_*; do
+    [ -d "$d" ] || continue
+    keep=""
+    [ -n "$best" ] && [ "$(basename "$d")" = "update_$best" ] && keep=1
+    [ -n "$last" ] && [ "$(basename "$d")" = "update_$last" ] && keep=1
+    if [ -z "$keep" ]; then
+      rm -rf "$d"
+      echo "[train.sh] pruned snapshot $(basename "$d")" | tee -a "$LOG"
+    fi
+  done
+  s3 sync "$snapdir" "s3://$S3_BUCKET/$S3_PREFIX/runs/$RUN_NAME/checkpoints/snapshots/" --delete --quiet || true
+}
+
 self_terminate() {
   [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ] || {
     echo "[train.sh] no RUNPOD_API_KEY/POD_ID; pod ends at its terminateAfter deadline"
@@ -143,6 +170,7 @@ fi
 echo "[train.sh] train.py exited with code $code" | tee -a "$LOG"
 
 kill $SYNC_PID 2>/dev/null || true
+prune_snapshots
 final_upload
 self_terminate
 exit "$code"

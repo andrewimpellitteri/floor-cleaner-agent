@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import sys
@@ -59,6 +60,13 @@ class TrainConfig:
     wandb_every_chunks: int = 5  # greedy-eval stills cadence (0 = no renders)
     eval_seconds: float = 150.0  # simulated seconds per eval rollout
     no_wandb: bool = False
+
+    # Snapshot retention for model selection (S3-cost bounded by design):
+    # every Nth chunk is kept under checkpoints/<run>/snapshots/, and at the
+    # end only best-eval + last survive (see BEST_UPDATE) -- the rolling
+    # `state` checkpoint alone cannot answer "which update was best".
+    # 0 disables snapshots; the rolling checkpoint is unaffected.
+    snapshot_every_chunks: int = 10
 
     # Fixed for now: the observation config is part of the environment and the
     # network shape follows from it. Change it and old checkpoints are void.
@@ -125,6 +133,13 @@ def main():
         wandb_id_file.write_text(wlog.run_id)
 
     env = CleaningEnv(Config())
+    # The shaping term F = gamma*Phi(s') - Phi(s) is policy-invariant only for
+    # the gamma the optimiser discounts with. The unit test pins the defaults;
+    # this pins the actual run, since tyro overrides can split them silently.
+    if abs(env.discount - ppo.gamma) > 1e-12:
+        sys.exit(f"env discount {env.discount} != ppo gamma {ppo.gamma}: "
+                 f"shaping would bias every step by (1-gamma)*Phi. "
+                 f"Pass matching values.")
     rng = jax.random.PRNGKey(tcfg.seed)
     runner = init_runner(env, ppo, rng)
     chunk = make_chunk(env, ppo)
@@ -161,6 +176,19 @@ def main():
             item=payload_template(runner, jnp.asarray(update))
         ), force=True)
 
+    def save_snapshot(runner, update):
+        snap = str(ckpt_dir / "snapshots" / f"update_{update:06d}")
+        ckptr.save(snap, ocp.args.PyTreeSave(
+            item=payload_template(runner, jnp.asarray(update))
+        ), force=True)
+
+    def eval_key(res):
+        # Finished runs sort by time-to-clean; unfinished by remaining grit.
+        # Tuple comparison does the right thing across the two cases.
+        if math.isfinite(res.seconds_to_clean):
+            return (0, res.seconds_to_clean)
+        return (1, res.final_remaining_kg)
+
     updates_total = ppo.num_updates
     print(f"{ppo.num_envs} envs x {ppo.num_steps} steps = {ppo.batch_size} per update, "
           f"{ppo.updates_per_chunk} updates per chunk, "
@@ -170,8 +198,20 @@ def main():
     t_start = time.time()
     update = start_update
     media_dir = ckpt_dir / "media"
+    best_update_file = ckpt_dir / "BEST_UPDATE"
     last_states = None
     eval_idx = 0
+    # Best-eval tracking survives resume via the file (update + score tuple),
+    # so a restarted run never "forgets" an early winner.
+    best_key = None
+    best_update = None
+    if tcfg.resume and best_update_file.is_file():
+        try:
+            parts = best_update_file.read_text().split()
+            best_update = int(parts[0])
+            best_key = (int(parts[1]), float(parts[2]))
+        except (ValueError, IndexError):
+            best_key, best_update = None, None
     try:
         while update < updates_total:
             t0 = time.time()
@@ -208,6 +248,13 @@ def main():
             if (update // ppo.updates_per_chunk) % tcfg.checkpoint_every_chunks == 0:
                 save(runner, update)
 
+            # Retained snapshots for model selection: best-eval + last survive
+            # the end-of-run prune (see BEST_UPDATE + train.sh), the rest are
+            # transient S3 traffic, not storage.
+            if tcfg.snapshot_every_chunks > 0 and (
+                    update // ppo.updates_per_chunk) % tcfg.snapshot_every_chunks == 0:
+                save_snapshot(runner, update)
+
             # Greedy-eval stills on a fixed floor, so the images show learning
             # rather than floor lottery. Skipped entirely when W&B is off, and
             # never allowed to kill a paid-for run: any failure here degrades
@@ -222,6 +269,22 @@ def main():
                                       max_seconds=tcfg.eval_seconds,
                                       record_every=25)
                     last_states = res.states
+                    # Scalar eval metrics: the model-selection instrument.
+                    # seconds_to_clean is inf when unfinished -- log it only
+                    # when finite so the curve stays plottable; `finished` and
+                    # remaining always are.
+                    eval_metrics = {
+                        "eval/finished": float(math.isfinite(res.seconds_to_clean)),
+                        "eval/remaining_kg": float(res.final_remaining_kg),
+                    }
+                    if math.isfinite(res.seconds_to_clean):
+                        eval_metrics["eval/seconds_to_clean"] = float(res.seconds_to_clean)
+                    wlog.log_update(eval_metrics, step=update)
+                    key = eval_key(res)
+                    if best_key is None or key < best_key:
+                        best_key, best_update = key, update
+                        best_update_file.write_text(
+                            f"{best_update} {key[0]} {key[1]:.6g}")
                     n_states = len(res.states)
                     for name, frac in (("start", 0.0), ("mid", 0.5), ("end", 0.999)):
                         still = (media_dir /

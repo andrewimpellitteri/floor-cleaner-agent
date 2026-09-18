@@ -355,6 +355,15 @@ refused. Verified with `--dry-run` and `--status` (auth works, nothing
 billing). Not yet launched: push the branch first — the pod clones origin,
 and `jax-rewrite` is still local-only.
 
+S3 costs (kept low by design, 2026-09-18): a checkpoint is ~220 MB
+(512-env state dominates); periodic 10-min syncs stream rolling + snapshots
+as transient traffic (PUTs measured in cents per run). Steady state per run
+is rolling + best-eval + last snapshots + media + CSV ≈ 0.7 GB ≈ $0.02/mo —
+`train.sh` prunes superseded snapshots locally and mirrors the prune with
+`sync --delete`, so seeds and ablations cannot accumulate unboundedly. The
+rolling `state` (resume point) is never pruned. `WANDB_API_KEY` is forwarded
+like the other secrets (dry-run redacted).
+
 #### GPU execution notes (from docs + roofline, 2026-09-18)
 Throughput model for the full config (512 envs, 60×200 grid, 16 substeps):
 ~1 GB HBM traffic per physics substep (all envs) → ~15 GB per control step →
