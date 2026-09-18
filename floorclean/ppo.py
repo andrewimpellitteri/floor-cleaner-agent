@@ -140,9 +140,9 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
 
             # Bootstrap through the time limit. `obs` here is still the real
             # final observation -- the reset has not happened yet. The extra
-            # forward is skipped unless some env actually truncated: with
-            # 1500-step episodes it fires on ~1/3 of rollout steps, and the
-            # physics dwarfs the network anyway.
+            # forward is skipped unless some env actually truncated. At 512
+            # envs and 4500-step episodes that is ~11% of rollout steps (see
+            # the reset note below), and the physics dwarfs the network anyway.
             def with_bootstrap(_):
                 _, _, final_value = network.apply(train_state.params, obs)
                 return reward + cfg.gamma * final_value * truncated * (1.0 - terminated)
@@ -159,6 +159,19 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # step (FFTs, blur, quantile over the whole batch) while being
             # discarded whenever nothing finished. Compute them only when at
             # least one env is done; the select below is then a no-op copy.
+            #
+            # Once episodes desynchronise, finishes are Poisson at
+            # num_envs/max_steps per step = 512/4500 = 0.114, so the branch
+            # fires 1 - exp(-0.114) ~ 11% of the time and is skipped ~89%.
+            # (Both branch comments predate the move to 15-minute episodes,
+            # which made this MORE valuable, not less.)
+            #
+            # k_reset is split from rng BEFORE the branch, so the RNG stream
+            # advances identically whether or not the reset is taken -- that is
+            # what makes this behaviour-preserving rather than merely close.
+            # NOTE: this relies on the predicate being a scalar. If make_chunk
+            # were ever vmapped, lax.cond degrades to a select that executes
+            # both branches and the saving silently vanishes.
             def do_reset(_):
                 reset_state, reset_obs = env_reset(jax.random.split(k_reset, cfg.num_envs))
                 return (_tree_where(done, reset_state, env_state),
