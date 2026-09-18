@@ -77,7 +77,7 @@ CSV_COLUMNS = [
     "update", "timesteps", "reward_mean", "episodes", "finished_clean",
     "fraction_removed", "worst_residual", "fraction_clean",
     "standoff_mean", "tilt_mean", "policy_loss", "value_loss",
-    "entropy", "approx_kl", "clip_fraction",
+    "entropy", "approx_kl", "clip_fraction", "explained_variance",
     # T3a — the cut-and-abandon panel: adhered falling while deposited climbs
     # and drained stays flat is the characteristic failure, invisible in
     # reward. Logged everywhere (CSV + W&B) so pinning them to one dashboard

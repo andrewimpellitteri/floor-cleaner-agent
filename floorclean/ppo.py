@@ -251,13 +251,12 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
                         jnp.clip(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv,
                     ).mean()
 
-                    # Clipped value loss, as in the original PPO implementation.
-                    v_clipped = mb_value + jnp.clip(
-                        value - mb_value, -cfg.clip_eps, cfg.clip_eps
-                    )
-                    v_loss = 0.5 * jnp.maximum(
-                        (value - mb_target) ** 2, (v_clipped - mb_target) ** 2
-                    ).mean()
+                    # Plain MSE value loss. SB3 defaults value clipping to
+                    # None, and Andrychowicz et al. 2020 find PPO-style value
+                    # clipping hurts regardless of threshold -- it binds exactly
+                    # when the critic most needs to move (our value targets
+                    # grew ~3x with gamma 0.999). Revisit only on evidence.
+                    v_loss = 0.5 * ((value - mb_target) ** 2).mean()
 
                     ent = entropy(log_std).mean()
                     total = pg + cfg.vf_coef * v_loss - cfg.ent_coef * ent
@@ -293,6 +292,14 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             "suspended_kg": metrics["suspended_kg"].mean(),
             "policy_loss": pg.mean(),
             "value_loss": v_loss.mean(),
+            # 1 = critic predicts returns perfectly; <=0 = worse than a
+            # constant. The critic must learn a -SCALE*Phi offset from ~zero
+            # init (Wiewiora 2003), so EV<=0 early is expected -- flat EV past
+            # ~50 updates means the value function, not the policy, is stuck.
+            "explained_variance": (
+                1.0 - jnp.var(targets - traj.value)
+                / jnp.maximum(jnp.var(targets), 1e-8)
+            ),
             "entropy": ent.mean(),
             "approx_kl": approx_kl.mean(),
             "clip_fraction": clip_frac.mean(),
