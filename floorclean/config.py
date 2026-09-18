@@ -224,7 +224,16 @@ class DirtConfig:
     # film's own bed shear plus whatever the jet is pushing with. Threshold is a
     # Shields-type criterion for grit already lying free on a smooth floor, so
     # it is three orders of magnitude below the adhesion yield stress.
-    deposit_threshold: float = 0.5  # Pa
+    # 0.1 Pa, from the Shields criterion for non-cohesive grains of the size
+    # implied by `settling_velocity` (~20 um silt). It must NOT sit near the
+    # floor's own gravity-driven bed shear, which is rho*g*h*S = 1000*9.81*
+    # 0.004*0.015 ~ 0.59 Pa for a 4 mm film on the 1.5% cross slope. An earlier
+    # guess of 0.5 Pa put the threshold right on top of that value, so transport
+    # ran on a knife edge and shut off entirely as the film drained: on a fresh
+    # floor a 15-minute pass cut 78% of the adhered grit and delivered only a
+    # quarter of it, leaving the rest lying loose. Cutting was never the
+    # bottleneck -- this was.
+    deposit_threshold: float = 0.1  # Pa
     deposit_entrainment_rate: float = 1.0e-2  # kg/m^2/s per Pa of excess
 
     # Settling velocity of the suspended grit, m/s.
