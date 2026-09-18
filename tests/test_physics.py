@@ -283,17 +283,26 @@ def test_entrainment_integrates_patch_excess():
     assert peak > cfg.dirt.yield_mean, "test jet cannot cut at all"
 
     def removed_after_one_step(yield_value):
+        # Deliberately far more bound grit than one substep could lift. This
+        # test is about the ENTRAINMENT RATE, and `from_bound` is capped by the
+        # grit actually present; at a realistic areal loading (~20 g/m^2) that
+        # cap binds inside the patch and would be what is measured instead.
+        # Deliberately far more bound grit than one substep could lift. This
+        # test is about the ENTRAINMENT RATE, and `from_bound` is capped by the
+        # grit actually present; at a realistic areal loading (~20 g/m^2) that
+        # cap binds hard inside the patch and would be what gets measured.
+        start_bound = jnp.full(shape, 5.0)
         state = initial_fields(*shape)._replace(
-            h=jnp.full(shape, 1.0e-3),
-            bound=jnp.full(shape, cfg.dirt.load_mean),
+            h=jnp.full(shape, 1.0e-3), bound=start_bound
         )
         ys = jnp.full(shape, yield_value)
-        start = float(jnp.sum(state.bound)) * cfg.floor.cell_area
         state = physics_substep(
             cfg, floor, state, ys, impact.water_source, impact.coverage,
             impact.intensity, impact.p_normal, impact.tau_x, impact.tau_y,
             cfg.sim.physics_dt)
-        return start - float(jnp.sum(state.bound)) * cfg.floor.cell_area
+        # Difference PER CELL before summing. Summing first would subtract two
+        # ~300 kg totals to recover a 0.4 g change, which float32 cannot do.
+        return float(jnp.sum(start_bound - state.bound)) * cfg.floor.cell_area
 
     Y = cfg.dirt.yield_mean
     G = peak - Y - Y * math.log(peak / Y)

@@ -181,15 +181,21 @@ class PushSweep:
         # Cap the band index so it cannot walk off past the wall.
         segment = jnp.minimum(segment, jnp.floor(fc.length_y * 0.5 / self.segment))
 
-        # Cross to the other half of the bay once this one is clean, otherwise
-        # the run can only ever finish half the floor.
-        # Cross over once a full set of lanes has been covered, rather than
-        # waiting for this side to come clean. A side never reaches "clean" on
-        # one coverage -- the worn lanes need several -- so a cleanliness test
-        # means the operator stays on one half of the bay forever and can only
-        # ever finish 50% of the floor. Alternating after each full sweep is
-        # also what a person actually does.
-        cross = wrapped & finished
+        # Cross to the other half of the bay once this one is covered, otherwise
+        # the run can only ever finish half the floor. A side never reaches
+        # "clean" on one coverage -- the worn lanes need several -- so a
+        # cleanliness test means the operator stays on one half of the bay
+        # forever. Alternating after each full sweep is also what a person
+        # actually does. Working outward (near_to_far), a "full sweep" means
+        # all bands, not just the first: crossing earlier resets the band
+        # index and the outer floor never gets worked.
+        if self.near_to_far:
+            n_bands = jnp.maximum(
+                jnp.ceil(fc.length_y * 0.5 / self.segment), 1.0)
+            side_covered = carry.segment >= n_bands - 1.0
+        else:
+            side_covered = True
+        cross = wrapped & finished & side_covered
         side = jnp.where(cross, -carry.side, carry.side)
         lane_x = jnp.where(cross, 0.0, lane_x)
         segment = jnp.where(cross, 0.0, segment)

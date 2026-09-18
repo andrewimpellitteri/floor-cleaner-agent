@@ -72,7 +72,7 @@ mutation Deploy($input: PodFindAndDeployOnDemandInput) {
 # a private fork). The pod needs S3 to mirror logs/checkpoints and
 # RUNPOD_API_KEY to terminate itself when the job finishes.
 FORWARD_ENV = ["GH_PAT", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-               "S3_ENDPOINT_URL", "RUNPOD_API_KEY"]
+               "S3_ENDPOINT_URL", "RUNPOD_API_KEY", "WANDB_API_KEY"]
 
 # Bootstrap: authenticated-free clone of the public repo at $GIT_REF, then run
 # the job script from that checkout. NO single quotes anywhere in this string:

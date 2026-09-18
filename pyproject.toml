@@ -18,6 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["jax[cuda12]>=0.4.35"]
 dev = ["pytest>=8.3", "ruff>=0.8"]
+# Optional run visibility. Never imported unless WANDB_API_KEY is set (or
+# WANDB_MODE=offline); runs without it are identical with or without this.
+wandb = ["wandb>=0.17"]
 
 [build-system]
 requires = ["hatchling"]

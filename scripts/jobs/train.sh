@@ -10,8 +10,12 @@
 #   RUN_NAME       run name -> scripts/train.py --run-name (default: base)
 #   TRAIN_ARGS     extra args appended to scripts/train.py (tyro overrides)
 #   JOB_TIMEOUT    seconds for the whole job; empty/0 = none (default: none).
-#                  Checkpoints stream to S3 every chunk, so a pod-deadline kill
-#                  loses at most one chunk, not the run.
+#                  A pod-deadline kill is a hard kill, so results are synced to
+#                  S3 in the background every 10 min (SYNC_SECS below), not
+#                  just at the end: a kill loses at most one interval, not
+#                  the run.
+#   RESUME_FROM_S3 set to 1 with TRAIN_ARGS="--resume" to continue a previous
+#                  pod's run: pulls its checkpoints + CSV down before starting.
 #   S3_BUCKET      results destination (required)
 #   S3_PREFIX      key prefix (default: floorclean)
 #   RUNPOD_API_KEY + RUNPOD_POD_ID  self-termination (warn-only if missing:
@@ -29,6 +33,19 @@ LIVE_KEY="s3://${S3_BUCKET:-}/$S3_PREFIX/runs/$RUN_NAME/train.live.log"
 fail() { echo "[train.sh] FATAL: $*" | tee -a "$LOG" >&2; final_upload; self_terminate; exit 1; }
 
 s3() { aws s3 "$@" >>"$LOG" 2>&1; }
+
+SYNC_SECS=600
+sync_now() {
+  # Periodic mirror: checkpoints (incl. media/ stills), CSV, and the log.
+  # Runs in the background during the job and once at the end, so a hard kill
+  # at the pod deadline loses at most one interval.
+  [ -n "${S3_BUCKET:-}" ] || return 0
+  dest="s3://$S3_BUCKET/$S3_PREFIX/runs/$RUN_NAME"
+  s3 sync "$REPO/checkpoints/$RUN_NAME" "$dest/checkpoints/" --quiet || true
+  [ -f "$REPO/training_logs/$RUN_NAME.csv" ] \
+    && s3 cp "$REPO/training_logs/$RUN_NAME.csv" "$dest/training.csv" --quiet || true
+  s3 cp "$LOG" "$LIVE_KEY" --quiet || true
+}
 
 final_upload() {
   [ -n "${S3_BUCKET:-}" ] || return 0

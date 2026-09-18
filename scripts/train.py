@@ -2,9 +2,13 @@
 """PPO training driver: the outer loop only.
 
 `floorclean/ppo.py` already compiles rollout + GAE + optimisation into one
-`lax.scan` (`make_chunk`); this script calls it in a loop, logs metrics to CSV,
-and checkpoints with orbax so a RunPod pod can be resumed or restarted without
-babysitting. No wandb -- everything here runs offline.
+`lax.scan` (`make_chunk`); this script calls it in a loop, logs metrics to CSV
+(plus Weights & Biases when configured -- see below), and checkpoints with
+orbax so a RunPod pod can be resumed or restarted without babysitting.
+
+W&B is strictly optional: logging activates only if `wandb` is installed and
+`WANDB_API_KEY` is set (or `WANDB_MODE=offline`), otherwise every call no-ops
+and the run is identical to a run without it. The CSV stays primary.
 
     .venv/bin/python scripts/train.py --run-name base
     .venv/bin/python scripts/train.py --run-name base --resume
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import pathlib
 import sys
 import time
@@ -32,6 +37,9 @@ import tyro
 from floorclean.config import Config
 from floorclean.env import CleaningEnv
 from floorclean.ppo import PPOConfig, RunnerState, init_runner, make_chunk
+from floorclean.rollout import NeuralPolicy, run_episode
+from floorclean.render import render_episode, save_still
+from floorclean.wandblog import WandbLog, git_tags
 
 
 @dataclasses.dataclass(frozen=True)
@@ -42,6 +50,15 @@ class TrainConfig:
     csv_path: str = "training_logs"
     checkpoint_every_chunks: int = 1
     resume: bool = False
+
+    # W&B visibility. Strictly opt-in by environment: active only when
+    # `wandb` is installed and WANDB_API_KEY is set (or WANDB_MODE=offline).
+    # `--no-wandb` forces it off even then. CSV logging is unaffected either
+    # way and stays the primary record.
+    wandb_project: str = "floorclean"
+    wandb_every_chunks: int = 5  # greedy-eval stills cadence (0 = no renders)
+    eval_seconds: float = 150.0  # simulated seconds per eval rollout
+    no_wandb: bool = False
 
     # Fixed for now: the observation config is part of the environment and the
     # network shape follows from it. Change it and old checkpoints are void.
@@ -83,6 +100,23 @@ def main():
 
     with open(ckpt_dir / "config.json", "w") as f:
         json.dump(dataclasses.asdict(tcfg), f, indent=2)
+
+    # W&B first, before any JAX-heavy work: it spawns its service process and
+    # must not fork after XLA thread pools are up. On resume, the stored run
+    # id continues the same curve instead of starting a second run.
+    wandb_id_file = ckpt_dir / "wandb_id"
+    resume_id = None
+    if tcfg.resume and wandb_id_file.is_file():
+        resume_id = wandb_id_file.read_text().strip() or None
+    wlog = WandbLog.from_env(
+        project=None if tcfg.no_wandb else tcfg.wandb_project,
+        run_name=tcfg.run_name,
+        config={"train": dataclasses.asdict(tcfg)},
+        tags=["stage:ppo-train", f"seed:{tcfg.seed}"] + git_tags(),
+        resume_id=resume_id,
+    )
+    if wlog.enabled and wlog.run_id and not tcfg.resume:
+        wandb_id_file.write_text(wlog.run_id)
 
     env = CleaningEnv(Config())
     rng = jax.random.PRNGKey(tcfg.seed)
@@ -129,6 +163,9 @@ def main():
 
     t_start = time.time()
     update = start_update
+    media_dir = ckpt_dir / "media"
+    last_states = None
+    eval_idx = 0
     try:
         while update < updates_total:
             t0 = time.time()
@@ -137,11 +174,16 @@ def main():
 
             n = ppo.updates_per_chunk
             for i in range(n):
-                row = [update + 1 + i, (update + 1 + i) * ppo.batch_size]
-                row += [float(jnp.asarray(summary[k][i])) for k in CSV_COLUMNS[2:-1]]
-                row.append(wall / n)
-                csv_f.write(",".join(f"{v:.6g}" if isinstance(v, float) else str(v)
-                                     for v in row) + "\n")
+                upd = update + 1 + i
+                row = {"update": upd,
+                       "timesteps": upd * ppo.batch_size}
+                row.update({k: float(jnp.asarray(summary[k][i]))
+                            for k in CSV_COLUMNS[2:-1]})
+                row["seconds"] = wall / n
+                csv_f.write(",".join(
+                    f"{row[k]:.6g}" if isinstance(row[k], float) else str(row[k])
+                    for k in CSV_COLUMNS) + "\n")
+                wlog.log_update({k: row[k] for k in CSV_COLUMNS[1:]}, step=upd)
             csv_f.flush()
             update += n
 
@@ -159,10 +201,49 @@ def main():
 
             if (update // ppo.updates_per_chunk) % tcfg.checkpoint_every_chunks == 0:
                 save(runner, update)
+
+            # Greedy-eval stills on a fixed floor, so the images show learning
+            # rather than floor lottery. Skipped entirely when W&B is off.
+            if wlog.enabled and tcfg.wandb_every_chunks > 0 and (
+                    update // ppo.updates_per_chunk) % tcfg.wandb_every_chunks == 0:
+                media_dir.mkdir(parents=True, exist_ok=True)
+                policy = NeuralPolicy(runner.train_state.params, env.action_dim)
+                res = run_episode(env, policy,
+                                  jax.random.PRNGKey(10_000 + eval_idx),
+                                  max_seconds=tcfg.eval_seconds,
+                                  record_every=25)
+                last_states = res.states
+                n_states = len(res.states)
+                for name, frac in (("start", 0.0), ("mid", 0.5), ("end", 0.999)):
+                    still = (media_dir /
+                             f"eval{eval_idx:04d}_{name}.png")
+                    save_still(env, res.states[min(n_states - 1,
+                                                   int(frac * n_states))],
+                               str(still))
+                    wlog.log_image(str(still),
+                                   caption=f"eval {eval_idx} {name}: "
+                                           f"{res.seconds_to_clean:.0f}s to clean, "
+                                           f"{res.final_remaining_kg:.2f}kg left",
+                                   step=update)
+                eval_idx += 1
     except KeyboardInterrupt:
         print("interrupted -- saving")
     finally:
         save(runner, update)
+        if wlog.enabled and last_states is not None:
+            mp4 = media_dir / "sweep_final.mp4"
+            try:
+                render_episode(env, last_states, str(mp4), fps=12)
+                wlog.log_video(str(mp4))
+            except Exception as e:
+                print(f"[!] final mp4 failed ({e}); stills kept in {media_dir}")
+        bucket = os.environ.get("S3_BUCKET")
+        if wlog.enabled and bucket:
+            prefix = os.environ.get("S3_PREFIX", "floorclean")
+            wlog.log_s3_reference(
+                f"s3://{bucket}/{prefix}/runs/{tcfg.run_name}/checkpoints/",
+                name=f"{tcfg.run_name}-checkpoints")
+        wlog.finish()
         csv_f.close()
         print(f"checkpoint at update {update} -> {ckpt_path}")
 

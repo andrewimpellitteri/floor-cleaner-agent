@@ -19,11 +19,14 @@ from .config import Config
 
 
 class Floor(NamedTuple):
-    """Static, episode-invariant geometry. Built once and shared by every env."""
+    """Static, episode-invariant geometry. Built once and shared by every env.
+
+    NOTE: no slope fields on purpose. The flow solver derives slopes from
+    `floor.z + h` directly (which carries the per-episode undulation); a
+    stored design slope would silently go stale against episode elevation.
+    """
 
     z: jnp.ndarray  # (nx, ny) floor elevation, m
-    dzdx: jnp.ndarray  # (nx, ny) floor slope, m/m
-    dzdy: jnp.ndarray
     trough: jnp.ndarray  # (nx, ny) in [0,1], fraction of cell inside the trough
     x: jnp.ndarray  # (nx, ny) cell-centre coordinates, m
     y: jnp.ndarray
@@ -51,15 +54,7 @@ def build_floor(cfg: Config) -> Floor:
     basin = 0.5 * (1.0 + jnp.tanh((0.5 * fc.trough_width - dist_from_trough) / edge))
     z = z - fc.trough_depth * basin
 
-    dzdx, dzdy = _gradient(z, dx)
-    return Floor(z=z, dzdx=dzdx, dzdy=dzdy, trough=basin, x=x, y=y)
-
-
-def _gradient(field: jnp.ndarray, dx: float):
-    """Central-difference gradient with one-sided differences at the edges."""
-    gx = jnp.gradient(field, dx, axis=0)
-    gy = jnp.gradient(field, dx, axis=1)
-    return gx, gy
+    return Floor(z=z, trough=basin, x=x, y=y)
 
 
 def smooth_random_field(

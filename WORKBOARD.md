@@ -138,12 +138,9 @@ What this actually means:
    optimum standoff is very likely not "as close as possible", which is worth
    the study on its own.
 
-#### 2026-09-18, second probe (current physics: analytic-G entrainment, load 0.10)
-`run_to_completion.py --strategy far_to_near --seed 0 --max-minutes 40` from a
-fresh floor (5.38 kg start): **NOT CLEAN after 40 min** — worst residual stuck
-at 0.4–0.9 the whole run, 44% of cells clean, 2.44 kg drained. The stall is the
-worn lanes, and it is a threshold problem, not a rate problem. Effective
-excess G = P − Y − Y·ln(P/Y) by standoff/tilt (kPa):
+#### 2026-09-18, second probe — superseded (kept for the mechanism table)
+First 40-min `far_to_near` run, before the side-switch fix — numbers below
+are stale, mechanism stands. Effective excess G = P − Y − Y·ln(P/Y) (kPa):
 
 | wand | P | normal (2.5k) | lane (5.5k) | lane+ (8.5k) |
 |---|---|---|---|---|
@@ -162,6 +159,32 @@ lowering `worn_lane_boost`: the lanes are domain ground truth (ORIENTATION).
 Related: push delivery over 3 m is 10% dry / 40% on a 2.5 mm working film /
 69% at 6 mm — Andrew's "depends on standing water" reproduced exactly, so
 transport needs no knob; the sim starting wet is load-bearing, keep it.
+
+#### 2026-09-18, third probe (current code: fixed sides, load 0.10)
+Same command, seed 0: **still NOT CLEAN after 40 min** — worst 0.48 (24×
+threshold), 43.6% cells clean, 5.38 → 2.94 kg on floor, 2.44 drained, mass
+closure +0.000 kg. The ping-pong is gone and most adhered grit cuts, but the
+worst cells do not move: at G_lane+ = 0.2 kPa the compromise angle is on a
+knife-edge in the worn lanes, so completion is seed-fragile (the commit's
+lighter seed finished cutting; seed 0 does not). Raising `entrainment_rate`
+cannot fix G ≈ 0 — only pressure (closer/lower tilt) or dwell (re-attack)
+moves those cells.
+Also fixed here: `near_to_far` crossed sides after its FIRST band
+(`cross = wrapped & finished` reset the band index), so it never progressed
+outward — verified by trace (bands stuck at 0), now crosses only after the
+last band (`side_covered`). `BlastThenSweep` defaults to full-height passes
+and is unaffected; the mean-metric `_side_is_done` helper is now dead code
+(left in place — do not use it).
+
+#### Resolution coarsening for the training runs (verified 2026-09-18)
+
+The "dx 7→10 cm for ~2.9× speedup" proposal is invalid as stated: 4.2/0.10 =
+42 cells along x and `CleaningEnv` asserts `nx % pool == 0` (pool=4), so the
+env refuses to construct (checked directly, `AssertionError`). Nearest valid
+choices are **dx=8.75 cm (48×160, ~1.56× fewer cells)** or **dx≈11.67 cm
+(36×120, ~2.78× fewer cells)**. Whichever is picked, extend the
+grid-independence test to it and keep the planned ranking-invariance check
+(same benchmark order at both resolutions) as the convergence evidence.
 
 ### T2 · Rendering `DONE` → `floorclean/render.py`
 Needed *before* trusting any training run, not after.
@@ -197,6 +220,9 @@ Implemented and CLI-verified; the chunk has not yet been executed at full size
 from a single pytree checkpoint.
 Smoke-verified on CPU 2026-09-18 (4 envs × 8 steps: 3 updates, CSV +
 checkpoint + `--resume` all OK, including the repeated-save `force` path).
+Independently roundtripped the same day: save → fresh init → restore gives
+bit-identical params/opt-state/env-step/rng, and training continues from the
+restored state.
 
 ### T4 · Benchmark — **this is the actual answer** `TODO` → `scripts/benchmark.py`
 The table that settles the argument. Depends on T1 and T3.
@@ -295,6 +321,30 @@ self-terminates; `--ref` defaults to the current branch and stale refs are
 refused. Verified with `--dry-run` and `--status` (auth works, nothing
 billing). Not yet launched: push the branch first — the pod clones origin,
 and `jax-rewrite` is still local-only.
+
+#### GPU execution notes (from docs + roofline, 2026-09-18)
+Throughput model for the full config (512 envs, 60×200 grid, 16 substeps):
+~1 GB HBM traffic per physics substep (all envs) → ~15 GB per control step →
+~1 TB per PPO update → ~2 s/update rollout on a 4090, ~5–7 h total training.
+The loop is memory-bandwidth bound stencil code; the network update is a
+minor share. Consequences:
+- Reset-path micro-opts (box-blur, FFT filters, quantile) are NOT worth it:
+  ~512 resets/chunk vs ~10M substep passes ≈ 0.005% of traffic. Killed with
+  numbers; do not revisit.
+- Untried, zero code risk, try in this order on the pod: `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`,
+  `JAX_LOG_COMPILES=1`, persistent `jax_compilation_cache_dir` in `train.py`
+  (recompiling the chunk every pod start costs minutes),
+  `--xla_gpu_enable_while_loop_double_buffering=true`,
+  `--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL`, then O1. Skip Triton
+  GEMM / NCCL / PGLE (no matmuls, no collectives, single GPU).
+- Structural speedups all trade science for speed and need the T4 validation
+  protocol, not blind application: 16→8 substeps halves the CFL speed limit
+  to 0.63 m/s (clips bow waves); coarser grid per the resolution note;
+  bf16 observations (pointless — update phase is already the minor share).
+- Bug-hunt side: no host-numpy inside any jitted path (checked `ppo/env/
+  physics/jet/networks/rollout/geometry`); `ppo.py`'s unused numpy import
+  removed. First-ever executions all pass: PPO chunk smoke, `train.py`
+  end-to-end + `--resume`, `run_episode(fresh=True)`, headless still render.
 
 ### T11 · README rewrite `TODO`
 The current `README.md` describes the old implementation and is wrong in every

@@ -165,18 +165,26 @@ class DirtConfig:
     loosened slurry to the trough.
     """
 
-    # Areal loading of grit at the start, kg/m^2.
+    # Areal loading of dirt at the start, kg/m^2.
     #
-    # Anchored to Andrew's ~15 min for a floor that is "not crazy dirty". An
-    # earlier value of 0.30 put 18 kg -- 40 lb -- of grit on a 59 m^2 bay, which
-    # is a filthy floor, not a routine one, and it was the single biggest reason
-    # the simulated job ran about 4x long: single coverage of the bay takes
-    # ~15 min and lifts roughly a quarter of the load, so the loading sets the
-    # number of coverages needed and therefore the whole job time.
-    # 0.10 kg/m^2 is ~6 kg (13 lb) over the section: still visibly dirty.
-    # Raise it to model a bad day; `load_std` keeps it patchy either way.
-    load_mean: float = 0.10
-    load_std: float = 0.045
+    # This is a thin film of dirt and mould, not bulk grit. Published dust
+    # loadings for paved surfaces run 1-10 g/m^2 in decent condition and up to
+    # ~50 g/m^2 badly soiled; a ~20 um film at soil density is ~30 g/m^2. So
+    # 20 g/m^2 is a dirty-but-routine floor: about 1.2 kg (2.6 lb) over the
+    # whole 59 m^2 section, which is a few pounds of dirt off 630 sq ft.
+    #
+    # Earlier values of 0.30 and then 0.10 kg/m^2 were 40 lb and 13 lb on that
+    # same floor -- both far outside anything a working bay carries, and the
+    # main reason the simulated job ran several times too long.
+    #
+    # Note what this does to the character of the problem. At a realistic
+    # loading a single pass strips whatever it touches, so job time stops being
+    # set by how fast the jet cuts and becomes set by how fast you can physically
+    # COVER the floor. That is the right regime: it is why swath width (and so
+    # standoff) dominates, and it lands the job near the observed 15 minutes
+    # without tuning a rate constant to get there.
+    load_mean: float = 0.020
+    load_std: float = 0.009
 
     # Yield stress holding grit to the floor, Pa. The bay is a grit-broadcast
     # epoxy (hangar-type) floor, so the anti-slip aggregate gives it real
@@ -234,7 +242,10 @@ class DirtConfig:
     settling_velocity: float = 0.003
 
     # Cleanliness threshold: areal loading below this counts as clean, kg/m^2.
-    clean_threshold: float = 0.02
+    # Must scale WITH `load_mean` -- it is "looks clean", roughly a tenth of the
+    # starting film. At the old 0.02 value against a 0.020 kg/m^2 load the floor
+    # would begin the episode already clean by definition.
+    clean_threshold: float = 0.002
 
 
 @dataclasses.dataclass(frozen=True)
