@@ -1,0 +1,30 @@
+# T1 re-measurement at current physics (2026-09-19) -- #5's action item
+# Config: default (real layout, ponding trough 5mm, load_mean 0.020),
+# far_to_near, fresh floors, 0.2s control steps. Main @ 26e0191 (post-merge).
+
+60-min completion, seed 0 (scripts/run_to_completion.py):
+  start 1.08 kg -> drained 1.01 kg, floor 0.07 kg (closure +0.001 kg)
+  NOT CLEAN after 60 sim min: worst 0.0337 kg/m2 (17x threshold 0.002), 93.3% cells clean
+  worst frozen ~0.035 from min 47 on -- asymptotic tail, not a plateau with mass left
+
+30-min phase breakdown (4 seeds, 9000 steps each, ~90s wall each):
+  seed 0: worst=0.1200 clean=80.6% rem=0.195kg adh=0.063 dep=0.128 drained=0.882
+  seed 1: worst=0.0821 clean=63.6% rem=0.314kg adh=0.122 dep=0.189 drained=0.843
+  seed 2: worst=0.0750 clean=65.6% rem=0.257kg adh=0.085 dep=0.171 drained=1.009
+  seed 3: worst=0.0693 clean=72.3% rem=0.247kg adh=0.097 dep=0.145 drained=0.853
+
+Tail composition (seed 0, 30 min): worst cells are 100% LOOSE (bound=0.0000
+at every worst cell, all 4 seeds) -- cutting is done, the tail is transport.
+Worst-10 cells form one contiguous patch (~(29-33,49-54), y~3.5-3.8m) sitting
+in 1.4-2.0 mm of water on a flattened slope (measured y-gradient -10 to -12
+mm/m vs design -15 mm/m): a flat-spot undulation that slows drainage and
+strands slurry. 19.3% of cells still dirty at 30 min.
+
+Reading for #5/T1: at 1.13 kg neither standing verdict reproduces as stated.
+Cutting binds nowhere (worst cells have no adhered grit); bulk transport binds
+nowhere (eta high, 94% mass gone by 60 min). What binds completion is a long
+tail of loose grit stranded in flat spots -- the mechanism ORIENTATION
+describes ("flat spots hold standing water... where dirt sits down and stays"),
+now the quantitative finisher of the job. T1's 25-35 min band is not met by
+far_to_near at seed 0 (not clean at 60); the band or the baseline needs
+revisiting once #9-#11 pin the water pattern.
