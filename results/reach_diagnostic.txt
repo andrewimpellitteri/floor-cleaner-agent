@@ -37,6 +37,35 @@ distinguishable from constant. Contrast the cleaning task, where random scores
 0.235 against an optimum of 0.333 -- 70% of the way there for free. That
 contrast IS the reason this diagnostic exists.
 
+THE RESULT: PASS, decisively, at update 20
+
+Run `reach-diag` on a 4090, 2026-09-19 (W&B 8nckbota):
+
+  upd  20/457   r -0.10   adv_std 1.5733   H 4.549   6142 steps/s
+
+r = -0.10 against a random baseline of -0.193 and a constant-action -0.200.
+Twenty updates was enough to leave the untrained score decisively behind and
+head for the oracle's +0.055. The advantage signal tells the same story from
+the other side:
+
+  adv_std, reach task      1.5733
+  adv_std, cleaning task   0.08 - 0.14   (and collapsing toward zero)
+
+roughly 15x more usable gradient signal, on the same trainer, same network,
+same optimiser, same batch size.
+
+SO: THE MACHINERY IS FINE, THE CLEANING TASK IS FLAT. The policy gradient moves
+the policy quickly when there is something to move toward. The earlier
+below-random score was a policy that never left its initialisation because
+nothing was pulling it, not a learner that could not learn. That retires the
+"the learner is broken" hypothesis and makes issue #8 -- giving the agent
+something it must discover -- the right next step rather than a gamble.
+
+The run itself crashed at its first checkpoint on an unrelated bug of mine
+(zero-size placeholder arrays, which orbax refuses to save; fixed, with a test).
+The diagnostic had already answered by then, and the pod self-terminated, so it
+cost a couple of minutes.
+
 READING THE RESULT
 
   clearly above -116   the machinery is fine. The cleaning landscape really is

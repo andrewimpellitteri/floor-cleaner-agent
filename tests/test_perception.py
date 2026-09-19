@@ -142,7 +142,25 @@ def test_perception_does_not_touch_physics_or_reward():
         float(jnp.sum(b.fields.bound)), rel=1e-6)
 
 
-def test_blind_env_costs_nothing_when_memory_is_off():
-    """The omniscient configuration must not carry the memory arrays around."""
+def test_memory_off_costs_a_placeholder_not_a_grid():
+    """Omniscient runs must not carry full-size memory arrays..."""
+    fc = CleaningEnv().cfg.floor
     st = CleaningEnv().fresh_state(jax.random.PRNGKey(6))
-    assert st.seen.size == 0 and st.remembered.size == 0
+    assert st.seen.size < fc.nx * fc.ny
+    assert st.remembered.size < fc.nx * fc.ny
+
+
+def test_no_state_array_is_zero_size():
+    """...but they must not be ZERO-size either, in any configuration.
+
+    The trainer checkpoints env_state, and orbax refuses zero-size arrays:
+    "Cannot save arrays with zero size: ParamInfo: [name=env_state.seen]".
+    A (0, 0) placeholder killed a live run at its first checkpoint, and would
+    have killed every run, because memory-off is the default path. Nothing in
+    the unit tests touched checkpointing, so only the GPU run caught it.
+    """
+    for env in (CleaningEnv(), CleaningEnv(obs_cfg=BLIND),
+                CleaningEnv(reward_mode="reach")):
+        st = env.fresh_state(jax.random.PRNGKey(7))
+        for name, leaf in zip(st._fields, jax.tree.leaves(st)):
+            assert jnp.asarray(leaf).size > 0, f"{name} is zero-size"

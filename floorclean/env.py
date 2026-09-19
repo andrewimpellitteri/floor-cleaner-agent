@@ -463,7 +463,14 @@ class CleaningEnv:
         """Empty perception memory, sized to whether memory is on at all."""
         fc, oc = self.cfg.floor, self.obs_cfg
         if not oc.memory:
-            return jnp.zeros((0, 0)), jnp.zeros((0, 0, 0))
+            # 1x1 placeholders, NOT zero-size. The trainer checkpoints
+            # env_state and orbax refuses zero-size arrays outright:
+            # "Cannot save arrays with zero size: ParamInfo:
+            #  [name=env_state.seen]". That killed a run at its first
+            # checkpoint, and it would have killed every run, since this is
+            # the DEFAULT path. Never read -- every use is behind
+            # `if oc.memory` -- and costs 8 bytes.
+            return jnp.zeros((1, 1)), jnp.zeros((1, 1, 1))
         return (jnp.zeros((fc.nx, fc.ny)),
                 jnp.zeros((fc.nx, fc.ny, oc.n_channels)))
 
