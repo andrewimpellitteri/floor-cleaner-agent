@@ -1,85 +1,94 @@
 # Operator pace, measured from video
 
-Andrew asked for this directly. It was the last unmeasured variable in the
-control loop, and it is the one that converts every ranking in ANSWER.md into a
-clock: job time is `T = A / (W_eff * v)`, linear in `v`, and jet dwell time is
-`t_patch / v`, inverse in it.
+The last unmeasured variable in the control loop, and the one that converts
+every ranking in ANSWER.md into a clock: job time is `T = A / (W_eff * v)`,
+linear in `v`, and jet dwell time is `t_patch / v`, inverse in it.
 
 ## Result
 
-Source: `20260919_082524.mp4`, the fixed-camera stretch t = 19.5-31.0 s
-(10.6 s, 159 usable frames at 15 fps).
+Purpose-shot fixed-camera clip `20260919_165046.mp4` (2m16s, 1280x720 @ 30 fps),
+with a 10 ft tape laid on the floor as the metric reference. 102 s tracked,
+23 sustained runs of >1.2 s continuous travel. **The distribution is bimodal**,
+which is what makes it useful -- it separates the two speeds the model needs:
 
-| quantity | measured |
-|---|---|
-| in motion | 50% of the time |
-| pace while moving | **0.240 m/s** (IQR 0.211-0.292) |
-| averaged over motion + pauses | 0.166 m/s |
-| sustained push, best run | 0.357 m/s over 0.71 m / 2.0 s |
-| sustained push, next two | 0.234, 0.218 m/s |
+| mode | runs | median | what the model assumes | verdict |
+|---|---|---|---|---|
+| **working** (wand down, pushing) | 11 | **0.37 m/s** | `push_speed` 0.45 | ~1.2x too fast |
+| **transit** (repositioning) | 12 | **0.95 m/s** | `walk_speed` 1.00 | **confirmed** |
 
-**The model's `push_speed = 0.45 m/s` is about 1.9x too fast** against the
-median moving pace.
+Spot-checked by eye: frames drawn from the slow-mode runs show him bent with the
+wand down over wet floor; the fastest runs show an unmistakable walking stride.
 
-## Method, and why it is trustworthy where it is
+`walk_speed` had never been checked against anything and comes out right.
+`push_speed` is high but by far less than the first clip suggested.
 
-The camera is static (phone propped on the floor), so a per-pixel median over
-the window is the empty bay and the largest moving blob is the operator. He
-crosses the frame at constant depth -- apparent area varies only 34% across the
-window -- so pixels map to metres by a single constant rather than a
-perspective model.
+## Correction to the earlier estimate
 
-SCALE, from two references that agree to under 1%:
+The first pass on `20260919_082524.mp4` reported **0.240 m/s** and "1.9x too
+fast". That is superseded. Two reasons, both mine:
 
-* **His body.** Read off a ruler overlay at full resolution rather than trusted
-  to a threshold: feet at x = 120, head at x = 465, so 345 px at 720 wide = 259
-  px at the 540 analysis width. He is bent at the hips while pushing, so
-  standing height is ~259 / 0.937 = 276 px (legs straight, torso at ~30 deg).
-  1.78 m / 276 px = **0.645 cm/px**.
-* **The wall flag.** 95 x 72 px at 720 wide = 71 px long at 540. A 12x18 in
-  flag (0.457 m) gives **0.643 cm/px**. No other standard flag size is within a
-  factor of three of being consistent, so the data picks the size rather than
-  the size being assumed.
+1. **It blended working with standing still.** That clip had him working largely
+   in place; 50% of frames were stationary, and a median taken over "moving"
+   frames at a 0.15 m/s threshold still folds in a lot of shuffling. Measuring
+   sustained runs instead of thresholded instants raises the working figure to
+   0.37.
+2. **It assumed constant depth.** Fair for that clip, wrong in general. In the
+   new one his foot row runs 344-456 px and his apparent height 134-252 px -- a
+   1.9x change in scale across the clip. Andrew flagged this himself ("depth is
+   weird").
 
-Adopted 0.644 cm/px. Residual scale uncertainty is his true height, +-4.5%.
+## Method
 
-## Two wrong turns, recorded so they are not repeated
+Ground-plane model. Camera at height `hc`, no roll, horizon at image row `yh`,
+focal length `f`, principal point at centre. A floor point at image `(x, y)` is
+at `X = (x-cx)*hc/(y-yh)` laterally and `Z = f*hc/(y-yh)` in depth.
 
-1. **Grayscale segmentation caught only his legs.** His shirt is tan and the
-   wall is neutral, so in luminance the torso vanished and the bounding box was
-   his lower body. Using that as "height" put the scale out by ~35%. Fixed with
-   an R-B chroma channel, and then verified by eye on annotated frames rather
-   than trusted -- the first two attempts both looked plausible in the numbers
-   and were both wrong.
-2. **The first fit averaged walking with standing still.** He works in place for
-   half the window. A single regression over the whole segment returned 0.22 m/s,
-   which is neither his working pace nor his transit pace but a blend of the two
-   weighted by how much he happened to pause. Motion is now separated at a
-   0.15 m/s threshold and reported as pace-while-moving plus a duty cycle.
+* **Horizon** from the operator himself: for an upright figure on a plane,
+  `h_px = k*(y_foot - yh)`. Regressing height on foot row over 1147 detections
+  gives `yh = 210` px (r = 0.916).
+* **Scale** from the 10 ft tape, at the two placements it occupied. One placement
+  cannot separate `hc` from `f`; two at different positions and orientations
+  can. They agree on `hc = 1.62 m` to 8%.
+* **Speed** from displacement over sustained runs, NOT frame-to-frame gradients.
+  Depth is badly conditioned here -- `dZ/dy ~ 0.032 m/px`, so 3 px of foot-row
+  wobble manufactures ~1 m/s at 10 fps, and the naive gradient gave a nonsense
+  IQR topping 1.07 m/s. Lateral is 5x better at `dX/dx ~ 0.007 m/px`. Over a
+  2 s run the real displacement dwarfs the jitter in both axes.
 
-## What this does NOT establish
+Uncertainty ~±10-15%: `f` is inferred rather than measured (the two tape
+placements agree best near 1100 px, a normal phone lens), and the two placements
+differ by 8% on `hc`.
 
-* **One clip, 10.6 s, one operator.** Three sustained pushes, spread
-  0.218-0.357 m/s. That spread is real technique variation, not noise, and the
-  sample is far too small to characterise it.
-* **No transit speed.** `walk_speed = 1.0 m/s` (repositioning between passes)
-  remains completely unchecked -- he is working throughout this clip.
-* **The 50% duty cycle is not interpretable yet.** It could be stubborn spots,
-  hose management, or filming. It matters: at face value it would nearly double
-  the job estimate again, on top of the 1.9x.
+## Three wrong turns, recorded because each produced plausible numbers
 
-A purpose-shot replacement is specified in the "Wash Bay Pace Test" field card
-(two markers a measured distance apart, so the measurement reduces to
-timestamps and needs no camera calibration at all).
+1. **Grayscale segmentation caught only his hoodie.** A light band at his waist
+   splits the silhouette, so the largest connected component was the torso and
+   "foot row" was often his waist. Luminance contrast on the shorts is ample
+   (108 against a 168-181 floor) -- the fix was morphological (close with a tall
+   kernel before labelling), not a threshold change. Caught by drawing the boxes
+   and looking, not by the numbers, which looked fine.
+2. **Crude tape endpoints.** Taking the mean row of the few leftmost pixels of a
+   2 px line returned y = 431 one second and 466 the next for the same physical
+   placement. A 15 px error in row is a large error in depth, and it made the two
+   placements algebraically inconsistent with *any* focal length. Fixed by
+   tracing the ridge column-by-column and line-fitting over hundreds of columns.
+3. **Frame-to-frame gradients** — see above.
+
+## What this still does not establish
+
+* One operator, one session. The 11 working runs spread 0.23-0.58 m/s; that is
+  real technique variation and the sample does not characterise it.
+* The implied height from the calibration is 1.59 m, which is short. Most likely
+  the detected foot row sits slightly above his true feet (grey shoes against
+  white epoxy), which would bias distances up a few percent.
 
 ## Consequence for the model
 
-`push_speed` 0.45 -> ~0.25 m/s does NOT change any cleaning conclusion. Cutting
-is saturated (Da ~ 42, see math_analysis), so a slower pass removes the same
-grit; the ranking of strategies is unchanged, and every comparison in ANSWER.md
-is between strategies at the same speed.
+`push_speed` 0.45 -> ~0.37 m/s does NOT change any cleaning conclusion. Cutting
+is saturated (Da ~ 42, `math_analysis.pdf`), so a slower pass removes the same
+grit, and every comparison in ANSWER.md is between strategies at equal speed.
 
-What it changes is the CLOCK, and only the clock -- the job is ~1.9x longer per
-unit area swept than the model assumes. Do not adjust the constant until the
-purpose-shot clips land: correcting a 15-minute episode length on 10.6 seconds
-of evidence would be trading a known error for an unknown one.
+It changes the CLOCK by ~20% on the pushing phase, and confirms the transit
+constant outright. That is a much smaller correction than the 1.9x the first
+clip implied, and it is the direction that matters: the 15-minute routine pass
+and the ~30-minute deep clean both stand.
