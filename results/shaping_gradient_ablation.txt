@@ -1,6 +1,13 @@
 Five-run GPU ablation: why the policy plateaus at ~0.39 clean
 =============================================================
-2026-09-19. 5x RTX-class pods, 600 updates each (150M steps; 750M total).
+2026-09-19. 5x RTX-class pods, 600 updates each.
+512 envs x 64 steps = 32768 timesteps/update -> 19.7M per run, 98M total.
+(An earlier version of this file said 150M each / 750M total. That was wrong
+by 7.6x -- I multiplied updates by an assumed 250k/update instead of reading
+the logged `timesteps` column. The conclusions are unaffected because none of
+them rest on the budget: r_gen being constant makes the advantages zero
+analytically, and unreachability was established by a 90-minute scripted run,
+not by how long training ran. But the evidence is 7.6x weaker than stated.)
 ent0030/ent0003/ent0000 vary ent_coef at alpha=1. alpha000/alpha050 vary
 potential_baseline_alpha at ent_coef=0.003. All other config identical.
 
@@ -35,7 +42,7 @@ WHY: THE UNSHAPED OBJECTIVE IS EMPTY
   1. r_gen (reward minus shaping) is CONSTANT: -0.2000/step, std 0.000000,
      one unique value over 3000 steps. It is just -TIME_COST.
   2. finished_clean = 0.0 on EVERY update of all five runs. The FINISH_BONUS
-     has fired ZERO times in >160M steps. worst_residual RISES (0.050 -> 0.062
+     has fired ZERO times in 98M steps. worst_residual RISES (0.050 -> 0.062
      -0.088), so completion is not being approached.
   => The unshaped MDP's return is identical for every policy. Its advantages
      are identically zero. At alpha=1 PPO computes exactly those advantages,
@@ -111,7 +118,7 @@ The ordering of the peaks is the mechanism, visible directly:
   alpha=1   peaks LATEST (199-256) -- shaping pre-absorbed, nothing to exhaust,
             so the slow drift dominates from the start.
 
-finished_clean = 0 on every update of every run. Zero completions in 750M
+finished_clean = 0 on every update of every run. Zero completions in 98M
 steps. The finish bonus has never once been collected.
 
 HEAD-TO-HEAD AGAINST THE HAND-CODED BASELINE

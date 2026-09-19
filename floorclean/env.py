@@ -146,8 +146,8 @@ TIME_COST = 1.0  # per second of simulated work -- the objective being minimised
 # Before it, the genuine (unshaped) reward was `-TIME_COST*dt + FINISH_BONUS*
 # done_clean`. Measured over 3000 steps, that came to a single unique value:
 # mean -0.2000, std 0.000000. The finish bonus fired exactly zero times in
-# 750M steps across five training configurations, and a 90-minute run of the
-# best scripted strategy showed why -- fraction_clean flatlines at 0.923 with
+# 98M steps across five training configurations (19.7M each), and a
+# 90-minute run of the best scripted strategy showed why -- fraction_clean flatlines at 0.923 with
 # a hard 7.7% residual, so "every cell under threshold" is not merely unreached
 # but UNREACHABLE. A constant reward has identically zero advantages, which is
 # precisely what the ablation measured, and no value of gamma, ent_coef or the

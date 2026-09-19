@@ -59,7 +59,7 @@ class PPOConfig:
     # so FINISH_BONUS = 400 was worth 4.4 reward units at episode start against
     # ~200 of accumulated time cost over the same horizon -- a ratio of 0.022.
     # The finish bonus was invisible even before you ask whether it is
-    # reachable, and it fired exactly zero times in 750M steps of training.
+    # reachable, and it fired exactly zero times in 98M steps of training.
     #
     # 0.9998 gives a 5000-step (16.7 min) horizon, just longer than the
     # episode, and gamma^4500 = 0.407. The terminal event is now worth seeing.
@@ -74,7 +74,7 @@ class PPOConfig:
     #
     #   alpha = 0  -- the critic must learn the whole -SCALE*Phi offset. It does,
     #                 to EV 0.99995, and the residual left for the policy is
-    #                 4.6e-5 of return variance. Run 1: 150M steps, 0 episodes
+    #                 4.6e-5 of return variance. Run 1: 0 episodes
     #                 ever clean, every metric worse than init.
     #   alpha = 1  -- exact cancellation. delta = r_gen + gamma*f' - f, and
     #                 r_gen is CONSTANT at -TIME_COST*dt (measured: std 0.0
