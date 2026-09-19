@@ -55,6 +55,31 @@ class PPOConfig:
     # enough ahead to value pushing slurry the length of the bay.
     # MUST match CleaningEnv(discount=...) -- the shaping term uses it.
     gamma: float = 0.999
+
+    # How much of the potential to hand the critic analytically, in
+    # V(s) = f(s) - alpha*REWARD_SCALE*Phi(s).
+    #
+    # This is a dial between two known-bad endpoints, and the reason it exists
+    # is that they are the SAME quantity seen from two sides (issue #4):
+    #
+    #   alpha = 0  -- the critic must learn the whole -SCALE*Phi offset. It does,
+    #                 to EV 0.99995, and the residual left for the policy is
+    #                 4.6e-5 of return variance. Run 1: 150M steps, 0 episodes
+    #                 ever clean, every metric worse than init.
+    #   alpha = 1  -- exact cancellation. delta = r_gen + gamma*f' - f, and
+    #                 r_gen is CONSTANT at -TIME_COST*dt (measured: std 0.0
+    #                 over 3000 steps, one unique value) because the finish
+    #                 bonus never fires. So the shaping is gone from the
+    #                 learning problem entirely -- Wiewiora's equivalence run in
+    #                 reverse -- and there is nothing to learn from. gate4:
+    #                 adv_std collapses 16x, EV_f RISES to 0.79 as the policy
+    #                 randomises into predictability.
+    #
+    # Intermediate alpha keeps some shaping in the TD residual while removing
+    # most of the offset the critic would otherwise have to memorise. Whether
+    # any alpha is actually good is an empirical question, not a theoretical
+    # one -- both endpoints are measured failures.
+    potential_baseline_alpha: float = 1.0
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
     ent_coef: float = 0.003
@@ -170,7 +195,8 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # is off-by-one (pairs V(s_t) with Phi(s_{t+1})).
             phi_pre = env_state.potential
             mean, log_std, f_pre = network.apply(train_state.params, last_obs)
-            value = f_pre - REWARD_SCALE * phi_pre
+            off = cfg.potential_baseline_alpha * REWARD_SCALE
+            value = f_pre - off * phi_pre
             action = mean + jnp.exp(log_std) * jax.random.normal(k_act, mean.shape)
             logp = log_prob(mean, log_std, action)
 
@@ -187,7 +213,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # the reset note below), and the physics dwarfs the network anyway.
             def with_bootstrap(_):
                 _, _, f_final = network.apply(train_state.params, obs)
-                final_value = f_final - REWARD_SCALE * phi_next_pre_reset
+                final_value = f_final - off * phi_next_pre_reset
                 return reward + cfg.gamma * final_value * truncated * (1.0 - terminated)
 
             def no_bootstrap(_):
@@ -260,7 +286,8 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         # GAE seed uses the carried-forward (post-reset-selected) state, which
         # is where the next rollout step acts from -- consistent with runner.obs.
         _, _, f_last = network.apply(runner.train_state.params, runner.obs)
-        last_value = f_last - REWARD_SCALE * runner.env_state.potential
+        last_value = (f_last - cfg.potential_baseline_alpha * REWARD_SCALE
+                      * runner.env_state.potential)
 
         def gae_step(carry, t):
             adv, next_value = carry
@@ -297,7 +324,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
                     mean, log_std, f_pred = network.apply(params, mb_obs)
                     # Full value in V-space so traj.value/targets/EV are
                     # untouched; the network only ever learns the residual f.
-                    value = f_pred - REWARD_SCALE * mb_phi
+                    value = f_pred - cfg.potential_baseline_alpha * REWARD_SCALE * mb_phi
                     logp = log_prob(mean, log_std, mb_action)
 
                     ratio = jnp.exp(logp - mb_logp)
@@ -340,8 +367,8 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         # dominated by that offset and reads ~1 by construction, so it can no
         # longer tell a working critic from a drowned one. EV_f is the one that
         # can -- it is EV measured against the residual the network predicts.
-        traj_f = traj.value + REWARD_SCALE * traj.phi
-        targets_f = targets + REWARD_SCALE * traj.phi
+        traj_f = traj.value + cfg.potential_baseline_alpha * REWARD_SCALE * traj.phi
+        targets_f = targets + cfg.potential_baseline_alpha * REWARD_SCALE * traj.phi
         summary = {
             "reward_mean": metrics["reward"].mean(),
             "episodes": metrics["done"].sum(),
