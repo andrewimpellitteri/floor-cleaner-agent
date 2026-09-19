@@ -90,6 +90,30 @@ class ObsConfig:
     # the policy most needs to make.
     n_channels: int = 4
 
+    # PARTIAL OBSERVABILITY (issue #8). Off by default: every result in
+    # results/ was measured with the omniscient view, and flipping the default
+    # would silently make them incomparable.
+    #
+    # With it on, the global map shows a REMEMBERED view -- what the operator
+    # saw when he was last near a cell, frozen since -- plus a `seen` channel
+    # marking where he has been at all. Cells never visited read blank, which
+    # includes their yield stress. That is the point: the omniscient view hands
+    # the agent a live map of the worn lanes, and finding the worn lanes is the
+    # single genuinely hard thing in this job. One floor in four has a worn lane
+    # holding 87% of the leftover grit (results/residual_where.txt), and a fixed
+    # sweep cannot condition on which floor it drew. An agent that must discover
+    # that has something to learn that the scripted baselines cannot do.
+    #
+    # The local crop stays LIVE -- you can see what is under the wand.
+    # Rewards and the shaping potential are computed from the TRUE state
+    # throughout; only perception changes.
+    memory: bool = False
+
+    @property
+    def map_channels(self) -> int:
+        """Channels in each map: the physical ones, plus `seen` if remembering."""
+        return self.n_channels + (1 if self.memory else 0)
+
 
 class EnvState(NamedTuple):
     fields: FieldState
@@ -105,6 +129,10 @@ class EnvState(NamedTuple):
     initial_mass: jnp.ndarray  # kg of grit the episode started with
     water_used: jnp.ndarray  # m^3, for the water-cost diagnostic
     key: jax.Array
+    # Perception memory (ObsConfig.memory). Zero-sized when it is off, so the
+    # omniscient configuration pays nothing for these.
+    seen: jnp.ndarray  # (nx, ny) 1 where visited at least once
+    remembered: jnp.ndarray  # (nx, ny, n_channels) as last observed
 
 
 class Obs(NamedTuple):
@@ -219,9 +247,10 @@ class CleaningEnv:
     @property
     def obs_shapes(self):
         fc, oc = self.cfg.floor, self.obs_cfg
+        c = oc.map_channels
         return {
-            "global_map": (fc.nx // oc.pool, fc.ny // oc.pool, oc.n_channels),
-            "local_map": (oc.crop, oc.crop, oc.n_channels),
+            "global_map": (fc.nx // oc.pool, fc.ny // oc.pool, c),
+            "local_map": (oc.crop, oc.crop, c),
             "vector": (11,),
         }
 
@@ -299,6 +328,7 @@ class CleaningEnv:
         # Includes the loose layer: a part-done floor's outstanding work is
         # everything still on it, not just what is still stuck down.
         initial_mass = jnp.sum(bound + deposited) * cfg.floor.cell_area
+        blank_seen, blank_mem = self._blank_memory()
 
         state = EnvState(
             fields=fields,
@@ -314,7 +344,10 @@ class CleaningEnv:
             initial_mass=initial_mass,
             water_used=jnp.array(0.0),
             key=k_next,
+            seen=blank_seen,
+            remembered=blank_mem,
         )
+        state = self._see(state)      # he can see where he is standing
         return state, self._observe(state)
 
     def fresh_state(self, key: jax.Array) -> EnvState:
@@ -332,7 +365,8 @@ class CleaningEnv:
             bound=bound, h=initial_water(k_water, cfg, z)
         )
         initial_mass = jnp.sum(bound) * cfg.floor.cell_area
-        return EnvState(
+        blank_seen, blank_mem = self._blank_memory()
+        return self._see(EnvState(
             fields=fields,
             yield_stress=yield_stress,
             z=z,
@@ -346,7 +380,9 @@ class CleaningEnv:
             initial_mass=initial_mass,
             water_used=jnp.array(0.0),
             key=k_next,
-        )
+            seen=blank_seen,
+            remembered=blank_mem,
+        ))
 
     def _apply_progress(self, key, bound, yield_stress):
         """Wind the floor forward to a random point in the job.
@@ -395,20 +431,66 @@ class CleaningEnv:
         grip = state.yield_stress / self.cfg.dirt.yield_mean
         return jnp.stack([adhered, loose, film, grip], axis=-1)  # (nx, ny, 4)
 
+    def _blank_memory(self):
+        """Empty perception memory, sized to whether memory is on at all."""
+        fc, oc = self.cfg.floor, self.obs_cfg
+        if not oc.memory:
+            return jnp.zeros((0, 0)), jnp.zeros((0, 0, 0))
+        return (jnp.zeros((fc.nx, fc.ny)),
+                jnp.zeros((fc.nx, fc.ny, oc.n_channels)))
+
+    def _see(self, state: EnvState) -> EnvState:
+        """Refresh what the operator can currently see, and remember it.
+
+        Visibility is the same egocentric crop the local map already uses, so
+        "what he can see" and "what he is shown at full resolution" are the same
+        claim. Cells inside it update; everything else keeps the value it had
+        when he was last there, which is what makes the remembered map go stale
+        and gives revisiting a purpose.
+        """
+        oc = self.obs_cfg
+        if not oc.memory:
+            return state
+        fc = self.cfg.floor
+        half = oc.crop // 2
+        i0 = jnp.clip((state.tip_x / fc.dx).astype(jnp.int32), 0, fc.nx - 1)
+        j0 = jnp.clip((state.tip_y / fc.dx).astype(jnp.int32), 0, fc.ny - 1)
+        ii = jnp.arange(fc.nx)[:, None]
+        jj = jnp.arange(fc.ny)[None, :]
+        vis = (jnp.abs(ii - i0) <= half) & (jnp.abs(jj - j0) <= half)
+        live = self._channels(state)
+        return state._replace(
+            seen=jnp.maximum(state.seen, vis.astype(state.seen.dtype)),
+            remembered=jnp.where(vis[..., None], live, state.remembered),
+        )
+
     def _observe(self, state: EnvState) -> Obs:
         cfg, oc = self.cfg, self.obs_cfg
         ch = self._channels(state)
+        if oc.memory:
+            # The GLOBAL view is memory, not truth: what he saw when last near
+            # each cell, with a `seen` channel so "never been there" is
+            # distinguishable from "been there, it was clean". Without that
+            # channel the two are the same all-zero reading and the agent
+            # cannot tell unexplored floor from finished floor.
+            ch = jnp.concatenate([state.remembered, state.seen[..., None]], axis=-1)
         nx, ny, nc = ch.shape
 
         # Global view: mean-pool so nothing is lost to aliasing.
         p = oc.pool
         global_map = ch.reshape(nx // p, p, ny // p, p, nc).mean(axis=(1, 3))
 
+        # The LOCAL crop stays live -- he can see what is under the wand.
+        ch = self._channels(state)
+        if oc.memory:
+            ch = jnp.concatenate([ch, jnp.ones_like(ch[..., :1])], axis=-1)
+        nc = ch.shape[-1]
+
         # Egocentric crop at full resolution. Pad first so a crop near the wall
         # is well defined: no grit and no water outside the bay, and a grip
         # value high enough to read as "not cleanable".
         half = oc.crop // 2
-        pad_vals = jnp.array([0.0, 0.0, 0.0, 4.0])
+        pad_vals = jnp.array([0.0, 0.0, 0.0, 4.0, 1.0][:nc])
         padded = jnp.stack(
             [
                 jnp.pad(ch[..., c], half, mode="constant", constant_values=pad_vals[c])
@@ -515,10 +597,17 @@ class CleaningEnv:
             azimuth=azimuth,
             step=state.step + 1,
             potential=self._potential(fields, state.initial_mass),
+            seen=state.seen,
+            remembered=state.remembered,
             initial_mass=state.initial_mass,
             water_used=state.water_used + wc.flow * dt,
             key=state.key,
         )
+
+        # Refresh perception at the NEW position, before anything observes it.
+        # Reward and the shaping potential below read the true fields, not this
+        # -- only what the policy SEES is limited.
+        new_state = self._see(new_state)
 
         # -- reward --------------------------------------------------------
         residual = residual_map(fields)

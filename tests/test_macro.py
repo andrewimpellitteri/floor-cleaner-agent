@@ -152,3 +152,16 @@ def test_macro_step_pays_the_finish_bonus_once():
     assert float(r) == pytest.approx(FINISH_BONUS / K, rel=0.05), (
         f"expected one bonus ({FINISH_BONUS / K:.3f}), got {float(r):.3f}; "
         f"repeated-bonus value is {repeated:.1f}")
+
+
+def test_macro_obs_shapes_is_a_property_like_the_inner_env():
+    """`CleaningEnv.obs_shapes` is a property; the wrapper must match.
+
+    This was a plain method returning `self.env.obs_shapes()` -- calling the
+    dict the property returns. Nothing reads obs_shapes today (networks build
+    from a sample obs), so it was a trap rather than a live failure.
+    """
+    env = CleaningEnv()
+    m = MacroEnv(env)
+    assert m.obs_shapes == env.obs_shapes
+    assert m.obs_shapes["vector"] == (11,)

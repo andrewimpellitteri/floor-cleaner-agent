@@ -145,8 +145,14 @@ class MacroEnv:
             raise AttributeError(name)
         return getattr(self.env, name)
 
+    @property
     def obs_shapes(self):
-        return self.env.obs_shapes()
+        # CleaningEnv.obs_shapes is a PROPERTY. This used to be a plain method
+        # doing `return self.env.obs_shapes()`, i.e. calling the dict it
+        # returns -- TypeError on the first use. It survived because nothing
+        # reads obs_shapes today (the networks are built from a sample obs),
+        # so it was a trap rather than a live failure.
+        return self.env.obs_shapes
 
     def _observe(self, state: EnvState) -> Obs:
         return self.env._observe(state)
