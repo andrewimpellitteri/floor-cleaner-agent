@@ -58,7 +58,13 @@ class TrainConfig:
     # way and stays the primary record.
     wandb_project: str = "floorclean"
     wandb_every_chunks: int = 5  # greedy-eval stills cadence (0 = no renders)
-    eval_seconds: float = 150.0  # simulated seconds per eval rollout
+    # Simulated seconds per eval rollout. This was 150 s (2.5 min), which is
+    # far too short to say anything about a job that takes 30+ minutes -- no
+    # policy can finish in 2.5 min, so `eval/finished` was structurally 0 and
+    # `eval/seconds_to_clean` never became finite. 1800 s matches the 30-minute
+    # benchmark that every scripted baseline is scored against, so the eval and
+    # the benchmark finally measure the same thing.
+    eval_seconds: float = 1800.0
     no_wandb: bool = False
 
     # Snapshot retention for model selection (S3-cost bounded by design):
@@ -293,10 +299,20 @@ def main():
                 try:
                     media_dir.mkdir(parents=True, exist_ok=True)
                     policy = NeuralPolicy(runner.train_state.params, env.action_dim)
+                    # fresh=True is REQUIRED here. Without it run_episode
+                    # starts at a random point through the job (matching the
+                    # training reset distribution), so every eval scalar below
+                    # is measured on a floor that was already part-cleaned for
+                    # free. That is what made training report fraction_clean
+                    # ~0.42 for a policy that scores 0.031 from a fresh floor:
+                    # the metric was reporting the reset lottery, not the
+                    # policy. The scripted baselines are all benchmarked fresh,
+                    # so this is also what makes the numbers comparable.
                     res = run_episode(env, policy,
                                       jax.random.PRNGKey(10_000 + eval_idx),
                                       max_seconds=tcfg.eval_seconds,
-                                      record_every=25)
+                                      record_every=250,
+                                      fresh=True)
                     last_states = res.states
                     # Scalar eval metrics: the model-selection instrument.
                     # seconds_to_clean is inf when unfinished -- log it only
