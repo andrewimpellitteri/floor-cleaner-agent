@@ -168,49 +168,57 @@ found and fixed against these clips:
 Frames are named by timestamp (t0007.00s.jpg) so a filename IS a time
 coordinate -- which is what makes walking speed recoverable from two frames.
 
-## Videos — what they do and do not contain
+## Videos — CORRECTED after looking properly
 
-Four clips, 720p30, 125 s total, extracted at 1 fps to 125 frames and triaged
-via contact sheets (twice: the first triage ran on wrongly-rotated frames and
-its output was discarded).
+An earlier version of this file said the videos contain no tape measure and no
+side-on wand, based on an agent triage of contact sheets. THAT WAS WRONG, and
+it was wrong because I delegated the looking after already having caught the
+same agent class misreading images twice. Andrew pushed back ("Please try to
+look harder? I took a lot video"). He was right. Looking at every sheet myself
+and then at native-resolution frames:
 
-CORRECTED TRIAGE RESULT: no tape measure and no side-on wand in ANY video
-frame. Spot-checking its best-rated "clean stripe edge with sharp wet/dry
-boundary" (082903 t0015) shows faint wet marks on clean floor, no stripe edge
-and no scale, so even the surviving categories are overcalled.
+### 20260919_082524 (41 s) — THE MEASUREMENT CLIP
+t0008-t0010 is a continuous side-on sequence with the ENTIRE lance visible from
+grip to nozzle, AND the 6 ft tape laid flat on the floor running from its hook
+out to directly beneath the nozzle tip. This is the issue #11 setup and it is
+set up correctly. The triage reported "WAND SIDE-ON: none" and "TAPE MEASURE:
+none" for this exact sheet.
 
-What the clips actually are: handheld walking pans pointed down at the floor,
-plus some room panning. Useful for wet-pattern structure (issue #9) and for
-confirming the awnings-on-the-bar geometry -- 082903 t0003 shows dark awnings
-hanging from the bar with wet patches on the floor beneath them, which is the
-line-source picture directly. Not useful for issue #11.
+Note the clip's phone was ROTATED MID-RECORDING: t0001-t0011 need a further 90
+CCW while t0018+ are already upright. One display-matrix flag cannot describe
+both halves, which is why a global transpose kept failing. Per-segment rotation
+is needed, not a per-file one.
 
-ISSUE #11 REMAINS BLOCKED. Nothing in this drop measures swath, standoff, tilt
-or walking speed.
+### 20260919_082607 (30 s) — chest-mounted POV of a pass
+Top-down operator view: shoes, lance, nozzle and floor all in frame throughout,
+with the tape appearing around t0016-t0017. Good for where the nozzle sits
+relative to the floor during an actual walking pass.
 
-## What to shoot next (specific, and none of it needs judging an angle by eye)
+### 20260919_082903 (34 s) — layout tour
+Drums and buckets along the wall, awnings hanging on the bar (t0003-t0004),
+hoses, and floor wet patches from t0012 on. Best clip for bay layout.
 
-The reason the earlier instructions failed is that they asked for quantities a
-person cannot eyeball -- tilt to +-15 deg is the difference between the model's
-two regimes. These ask only for things a camera can see against a scale.
+### 20260919_083021 (20 s) — THE WET-PATTERN CLIP
+The best evidence in the whole drop for issue #9. Large standing-water regions
+with sharp scalloped wet/dry boundaries (t0000-t0013), and at t0009-t0011 dark
+awnings hanging directly above wet floor. That is the line-source wetting seen
+directly, not inferred: awnings above, wet floor beneath.
 
-1. POND DEPTH AT THE TROUGH (issue #10, the highest-value single number).
-   Stand a dry popsicle stick / screwdriver vertically in the deepest part of
-   the trough pond, hold 3 seconds, pull it out, and photograph the wet mark
-   held against the tape IN AIR. Reading a submerged blade is what went wrong
-   this time; reading a wet mark in air is easy and unambiguous.
-2. SINGLE PASS, ONE STRIPE (issue #11). Lay the 6 ft tape FLAT on the floor
-   ACROSS the direction of travel, so it spans the stripe. Make one normal
-   pass. Then photograph straight down at the tape with the wet/cut stripe
-   crossing it. The swath width is then read off the tape, not estimated.
-3. WALKING SPEED (issue #11, free). Same pass, but film it with the 6 ft tape
-   lying ALONG the direction of travel in frame. Speed comes from two frames
-   and their timestamps; no one has to time anything.
-4. WAND GEOMETRY (issue #11). One still, camera at floor level about 3 m to the
-   SIDE of the operator mid-pass, with the 6 ft tape standing vertically in
-   frame next to them. Standoff and tilt are then both measurable off the image
-   against a known vertical -- neither has to be judged by eye.
-5. FLOOR CONDITION (new question). One photo of a traffic lane and one of an
-   area that has never been a lane, from the same height, so the wear contrast
-   is directly comparable. This resolves whether the floor is still "worn
-   through" as ORIENTATION.md records.
+## What is still blocked, and why it is NOT the footage's fault
+
+The tilt angle cannot be recovered from 082524 even though the geometry is all
+in frame. The camera is wide-angle, close to the subject, and lies nearly IN
+the plane of the wand's motion, so the lance-to-floor angle in the image is a
+projection of the true 3D angle, not the angle itself. Measured in projection
+the lance sits about 48 deg off the tape line; the true value could differ by
+20 deg or more, and the model's two regimes are separated by 15 deg. So this
+frame cannot settle it. Recording that as a measurement would repeat exactly
+the error that produced the bogus 3-inch pond reading.
+
+THE ONE QUESTION THAT UNLOCKS THE CLIP: what was the tape laid out to measure,
+and what did it read? If the hook was at the operator's feet and the blade ran
+to where the jet lands, then that reading IS the lead distance
+`standoff*tan(tilt)` -- and with standoff it gives tilt directly, with no
+image geometry needed at all. The footage plus one number from Andrew is
+enough; the footage alone is not.
+
