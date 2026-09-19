@@ -133,6 +133,11 @@ class EnvState(NamedTuple):
     # omniscient configuration pays nothing for these.
     seen: jnp.ndarray  # (nx, ny) 1 where visited at least once
     remembered: jnp.ndarray  # (nx, ny, n_channels) as last observed
+    # Target for the `reach` diagnostic (CleaningEnv.reward_mode). Two scalars,
+    # always carried: cheaper than branching the state tree, and ignored
+    # entirely in the default `clean` mode.
+    target_x: jnp.ndarray
+    target_y: jnp.ndarray
 
 
 class Obs(NamedTuple):
@@ -202,9 +207,24 @@ class CleaningEnv:
     """Single-environment pure functions. Use `jax.vmap` for a batch."""
 
     def __init__(self, cfg: Config | None = None, obs_cfg: ObsConfig | None = None,
-                 discount: float = 0.9998):
+                 discount: float = 0.9998, reward_mode: str = "clean"):
         self.cfg = cfg or Config()
         self.obs_cfg = obs_cfg or ObsConfig()
+        # "clean"  -- the real objective.
+        # "reach"  -- a DIAGNOSTIC: walk the wand tip to a target, which
+        #             respawns when reached. Dense, unambiguous, with a known
+        #             optimum (go straight there) and a random policy that does
+        #             obviously worse. It exists to answer one question that the
+        #             cleaning task cannot: can a policy gradient move the policy
+        #             AT ALL in this codebase? See results/ for why that is open
+        #             -- the critic reaches EV 1.000 (so the machinery, optimiser
+        #             and data path all work) while the policy scores BELOW a
+        #             uniform-random baseline, which is what a policy that never
+        #             left its initialisation would do: a freshly initialised
+        #             network emits a near-constant action, and a constant action
+        #             stands still and drains 0.000 kg.
+        assert reward_mode in ("clean", "reach"), reward_mode
+        self.reward_mode = reward_mode
         # Discount for the potential-based shaping term F = gamma*Phi(s') - Phi(s).
         # MUST equal the trainer's gamma (PPOConfig.gamma): with gamma=1 here the
         # per-step error (1-gamma)*Phi dwarfs TIME_COST (B2). Kept as a parameter
@@ -251,7 +271,7 @@ class CleaningEnv:
         return {
             "global_map": (fc.nx // oc.pool, fc.ny // oc.pool, c),
             "local_map": (oc.crop, oc.crop, c),
-            "vector": (11,),
+            "vector": (11 + (2 if self.reward_mode == "reach" else 0),),
         }
 
     # -- potential ---------------------------------------------------------
@@ -329,6 +349,8 @@ class CleaningEnv:
         # everything still on it, not just what is still stuck down.
         initial_mass = jnp.sum(bound + deposited) * cfg.floor.cell_area
         blank_seen, blank_mem = self._blank_memory()
+        k_next, k_tgt = jax.random.split(k_next)
+        tgt_x, tgt_y = self._sample_target(k_tgt)
 
         state = EnvState(
             fields=fields,
@@ -346,6 +368,8 @@ class CleaningEnv:
             key=k_next,
             seen=blank_seen,
             remembered=blank_mem,
+            target_x=tgt_x,
+            target_y=tgt_y,
         )
         state = self._see(state)      # he can see where he is standing
         return state, self._observe(state)
@@ -366,6 +390,8 @@ class CleaningEnv:
         )
         initial_mass = jnp.sum(bound) * cfg.floor.cell_area
         blank_seen, blank_mem = self._blank_memory()
+        k_next, k_tgt = jax.random.split(k_next)
+        tgt_x, tgt_y = self._sample_target(k_tgt)
         return self._see(EnvState(
             fields=fields,
             yield_stress=yield_stress,
@@ -382,6 +408,8 @@ class CleaningEnv:
             key=k_next,
             seen=blank_seen,
             remembered=blank_mem,
+            target_x=tgt_x,
+            target_y=tgt_y,
         ))
 
     def _apply_progress(self, key, bound, yield_stress):
@@ -438,6 +466,13 @@ class CleaningEnv:
             return jnp.zeros((0, 0)), jnp.zeros((0, 0, 0))
         return (jnp.zeros((fc.nx, fc.ny)),
                 jnp.zeros((fc.nx, fc.ny, oc.n_channels)))
+
+    def _sample_target(self, key):
+        """A point on the floor to walk to. Unused outside `reach`."""
+        fc = self.cfg.floor
+        kx, ky = jax.random.split(key)
+        return (jax.random.uniform(kx, (), minval=0.3, maxval=fc.length_x - 0.3),
+                jax.random.uniform(ky, (), minval=0.3, maxval=fc.length_y - 0.3))
 
     def _see(self, state: EnvState) -> EnvState:
         """Refresh what the operator can currently see, and remember it.
@@ -521,6 +556,14 @@ class CleaningEnv:
                 jnp.sum(state.fields.h) * cfg.floor.cell_area * 100.0,  # water on floor
             ]
         )
+        if self.reward_mode == "reach":
+            # Where the target is, relative to the tip. Without this the task
+            # is unsolvable rather than merely hard, and the diagnostic would
+            # prove nothing.
+            vector = jnp.concatenate([vector, jnp.stack([
+                (state.target_x - state.tip_x) / cfg.floor.length_x,
+                (state.target_y - state.tip_y) / cfg.floor.length_y,
+            ])])
         return Obs(global_map=global_map, local_map=local_map, vector=vector)
 
     def _current_pressure(self, state: EnvState) -> jnp.ndarray:
@@ -599,6 +642,8 @@ class CleaningEnv:
             potential=self._potential(fields, state.initial_mass),
             seen=state.seen,
             remembered=state.remembered,
+            target_x=state.target_x,
+            target_y=state.target_y,
             initial_mass=state.initial_mass,
             water_used=state.water_used + wc.flow * dt,
             key=state.key,
@@ -659,6 +704,38 @@ class CleaningEnv:
             "adhered_kg": jnp.sum(fields.bound) * cfg.floor.cell_area,
             "is_clean": done_clean,
         }
+
+        if self.reward_mode == "reach":
+            # DIAGNOSTIC -- see CleaningEnv.__init__. Reward is progress toward
+            # the target: dense, bounded, and telescoping to
+            # (start distance - end distance), so it cannot be farmed by
+            # circling. Reaching it respawns the target, making one episode many
+            # trials, and the score scales with how directly the policy walks.
+            # Optimum: go straight there. A CONSTANT action -- what a freshly
+            # initialised network emits -- scores about zero, which is exactly
+            # the discrimination this needs to make.
+            #
+            # The full `info` above is kept and added to rather than replaced:
+            # the trainer logs a fixed key set, and a partial dict fails deep
+            # inside a jitted scan (the same way the macro wrapper did).
+            d0 = jnp.hypot(state.target_x - state.tip_x,
+                           state.target_y - state.tip_y)
+            d1 = jnp.hypot(new_state.target_x - tip_x,
+                           new_state.target_y - tip_y)
+            hit = d1 < 0.30
+            k_tgt, k_keep = jax.random.split(state.key)
+            tx, ty = self._sample_target(k_tgt)
+            new_state = new_state._replace(
+                target_x=jnp.where(hit, tx, new_state.target_x),
+                target_y=jnp.where(hit, ty, new_state.target_y),
+                key=jnp.where(hit, k_keep, state.key),
+            )
+            info = {**info, "reach_hit": hit.astype(jnp.float32),
+                    "reach_dist": d1}
+            reward = (d0 - d1) + 1.0 * hit - TIME_COST * dt
+            return (new_state, self._observe(new_state), reward,
+                    jnp.bool_(False), truncated, info)
+
         return new_state, self._observe(new_state), reward, terminated, truncated, info
 
 

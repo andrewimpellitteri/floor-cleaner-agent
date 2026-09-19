@@ -1,0 +1,49 @@
+# The `reach` diagnostic: can a policy gradient move the policy at all?
+#
+# NOT part of the answer to Andrew's question. It exists to separate two
+# explanations for the RL failure that the cleaning task cannot tell apart.
+
+THE AMBIGUITY
+
+  "the learner is broken"  -- the trained policy scored 0.031 against a
+                              uniform-random 0.235. Below random is damning.
+  "the problem is flat"    -- there is nothing to learn, so the policy never
+                              moved from its initialisation.
+
+Both look identical from outside, and the evidence cuts both ways. The critic
+reaches EV 1.000, so the network, optimiser and data path all work. But a
+freshly initialised network emits a near-CONSTANT action (small weights, output
+~ bias ~ 0), and a constant action stands still and drains 0.000 kg -- which is
+exactly what the trained policy did. Entropy inflating to 6.2 is also what a
+policy does when the gradient carries nothing and only the entropy bonus pushes.
+That is a coherent story for "the policy never moved", not for "broken".
+
+THE TEST
+
+Replace the cleaning reward with: walk the wand tip to a target, which respawns
+when reached. Progress-based, so it is dense; telescoping to
+(start distance - end distance), so circling cannot farm it; target bearing in
+the observation, so it is solvable rather than merely hard.
+
+REFERENCES, 600 steps (120 s), 3 seeds, measured BEFORE any training:
+
+  policy       return   targets hit
+  oracle       +32.94          27.7      walk straight at it -- the ceiling
+  random      -116.09           0.3      uniform actions every step
+  constant    -120.00           0.0      what an untrained network emits
+
+153 reward units separate "never moved" from optimal, and random is barely
+distinguishable from constant. Contrast the cleaning task, where random scores
+0.235 against an optimum of 0.333 -- 70% of the way there for free. That
+contrast IS the reason this diagnostic exists.
+
+READING THE RESULT
+
+  clearly above -116   the machinery is fine. The cleaning landscape really is
+                       flat, and the fix is a better problem (issue #8, the
+                       partially-observed variant) rather than a better learner.
+  at or near -120      the policy gradient is not moving the policy. Fix that
+                       first; no reward design for the cleaning task will help,
+                       and the #8 work would be built on sand.
+
+Run it with `scripts/train.py --reach`.

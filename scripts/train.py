@@ -36,7 +36,7 @@ import orbax.checkpoint as ocp
 import tyro
 
 from floorclean.config import Config
-from floorclean.env import CleaningEnv
+from floorclean.env import CleaningEnv, ObsConfig
 from floorclean.macro import MacroEnv
 from floorclean.ppo import PPOConfig, RunnerState, init_runner, make_chunk
 from floorclean.rollout import NeuralPolicy, run_episode
@@ -91,6 +91,18 @@ class TrainConfig:
     # decision 0.19% of the between-floor variation, which is not learnable at
     # this batch size; the macro space gives 3.24%.
     macro: bool = False
+
+    # DIAGNOSTIC, not an objective. Replaces the cleaning reward with "walk to
+    # a target", which has a large dense signal and a known optimum, to settle
+    # whether a policy gradient can move the policy in this codebase at all.
+    # See tests/test_reach.py for why that question is open.
+    reach: bool = False
+
+    # Partial observability (issue #8): the global map becomes a remembered
+    # view and unvisited floor reads blank, so the worn lanes must be found
+    # rather than read off. Off by default -- every result in results/ was
+    # measured omniscient.
+    blind: bool = False
     no_wandb: bool = False
 
     # Snapshot retention for model selection (S3-cost bounded by design):
@@ -183,7 +195,22 @@ def main():
     if wlog.enabled and wlog.run_id and not tcfg.resume:
         wandb_id_file.write_text(wlog.run_id)
 
-    env = CleaningEnv(Config())
+    env = CleaningEnv(Config(), obs_cfg=ObsConfig(memory=tcfg.blind),
+                      reward_mode="reach" if tcfg.reach else "clean")
+    if tcfg.reach:
+        print("[reach] DIAGNOSTIC MODE -- not the cleaning objective. Walk the "
+              "tip to a target that respawns when reached.\n"
+              "        Measured references over 600 steps, 3 seeds "
+              "(results/reach_diagnostic.txt):\n"
+              "          oracle   +32.9  (27.7 targets)   <- ceiling\n"
+              "          random  -116.1  ( 0.3 targets)\n"
+              "          constant -120.0 ( 0.0 targets)   <- an untrained net\n"
+              "        PASS: clearly above -116. FAIL: at or near -120, meaning "
+              "the policy gradient is not\n        moving the policy and no "
+              "reward design for the cleaning task will help.")
+    if tcfg.blind:
+        print("[blind] partial observability: global map is REMEMBERED, "
+              "unvisited floor reads blank (issue #8).")
     if tcfg.macro:
         # One decision per STROKE instead of per 0.2 s control step. Measured
         # justification in results/action_leverage.txt: a low-level action is
