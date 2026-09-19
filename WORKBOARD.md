@@ -273,14 +273,62 @@ strategy:
 **Done when:** there is a table with confidence intervals that a skeptical
 coworker could not wave away as a fluke of one run.
 
+#### Training run 1 (`main`, interim at update 1500/4576 — 2026-09-18)
+
+Sources: S3 `training.csv` + eval stills (W&B run `1lzvcwhj` mirrors the same
+rows). Pod healthy ($0.74/hr), GPU backend, ~7.5k steps/s → ~5.1 h total;
+the 5 h guard likely fires at ~85–90%, resume tail is built and verified.
+
+**Literature double-check (all claims re-verified this session):** matched-γ
+shaping per Ng 1999 (code + unit test + startup assert); Φ(terminal)=0
+automatic per Grzes 2017; timeout bootstrap per Pardo 2018 in `ppo.py`;
+Wiewiora offset → EV watch; Devlin–Kudenko dynamic form covers future
+constant moves; value-clip removed per SB3 default + Andrychowicz 2020;
+λ stays 0.95 (dense shaping does the temporal decomposition; longer
+fragments would buy correlated-gradient variance per the ICLR batch-structure
+analysis); N=512/T=64 already the variance-safe shape.
+
+| metric | first 100 upd | last 100 upd | reading |
+|---|---|---|---|
+| explained_variance | 0.97 | 1.00 | critic learned the offset; no value problem |
+| value_loss | 3.1 | 0.27 | ÷10, consistent with EV |
+| standoff / tilt means | 0.54 m / 0.65 rad | 0.32 m / 0.22 rad | cutting posture emerging |
+| fraction_removed | 0.156 | 0.118 | **down** while reward flat (0.31→0.35) |
+| drained_kg | 0.084 | 0.060 | **down** — see below |
+| adhered left | 0.49 | 0.60 | **up** — cutting deep but narrow? |
+| worst_residual | 0.103 | 0.069 | better where it works |
+| entropy / KL | 4.60→4.26 / ~0.006 | — | still exploring, stable updates |
+| finished_clean | 0 throughout | — | no env has ever finished (expected) |
+
+Eval stills (update ~1400): 14 cm standoff, 0° tilt, operator effectively
+stationary in a corner — mid and end frames 75 sim-s apart are pixel-identical
+with grit unchanged. Consistent with the table: the policy cuts where it
+stands (immediate shaping) and never pushes (delayed, discounted payoff),
+harvesting the discount drizzle for staying dirty. **Not stop-criteria:**
+33% in, entropy healthy, totals still order correctly (parked ≈ +297 vs
+clean-fast ≈ +434), and this may be a transient cutting-first phase. If it
+persists past ~50%, escalate per plan (λ ladder first — T stays 64).
+
+**Two corrections to earlier analysis in this file and chat:**
+- Eval floors differ per eval (`PRNGKey(10_000 + eval_idx)`), so `BEST_UPDATE`
+  0.475 → 0.31 kg partly reflects floor lottery. Stills stay valid behavior
+  samples; final selection needs fixed-floor completions (this T4). Best-eval
+  tracking should move to a fixed key set.
+- The S3 log mirror looked dead mid-run while training was at update 100+:
+  `print()` block-buffered through `tee`, and `JAX_LOG_COMPILES=1` buried the
+  mirror in ~1600 lines of spam. Fixed (`PYTHONUNBUFFERED=1`, compiles
+  silenced — `cce756b`); visibility-only, training unaffected.
+
 ### T5 · Environment tests `DONE` → `tests/test_env.py`
 Mirror what `tests/test_physics.py` does for the physics.
 
 - Shaping telescopes: over an episode, summed shaping reward equals
   `REWARD_SCALE * (Φ_final − Φ_initial)` to float tolerance. If this fails the
   agent is being paid for something other than progress.
-- No free reward: an agent parked far from the trough with the wand at max
-  standoff earns approximately `−TIME_COST * dt` per step and nothing more.
+- No free reward: a parked wand earns the time cost plus only the known
+  discount drizzle `SCALE·(γ−1)·Φ₀` per step (positive, since Φ < 0) and
+  nothing more. (`test_no_free_reward` asserts exactly this; the old
+  "≈ −TIME_COST·dt" wording predates the matched-γ design.)
 - Truncation ≠ termination: at `max_steps`, `truncated=True` and
   `terminated=False` unless the floor is genuinely clean.
 - `reset` is deterministic given a key; `vmap` and `jit` both work.
