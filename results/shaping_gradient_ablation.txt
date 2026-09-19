@@ -1,0 +1,85 @@
+Five-run GPU ablation: why the policy plateaus at ~0.39 clean
+=============================================================
+2026-09-19. 5x RTX-class pods, 600 updates requested, read at 130-160.
+ent0030/ent0003/ent0000 vary ent_coef at alpha=1. alpha000/alpha050 vary
+potential_baseline_alpha at ent_coef=0.003. All other config identical.
+
+ARM 1 -- ent_coef (0.003 / 0.0003 / 0.0), alpha=1
+  run       ent_coef   entropy 4.59 ->   clean upd3 -> upd159   adv_std
+  ent0030   0.003      4.59 -> 4.656 UP   0.363 -> 0.387        0.99 -> 0.433
+  ent0003   0.0003     4.59 -> 4.421 dn   0.363 -> 0.411        0.99 -> 0.443
+  ent0000   0.0        4.59 -> 4.415 dn   0.363 -> 0.378        0.99 -> 0.403
+
+  ent_coef controls entropy exactly as advertised: it rises at 0.003 and falls
+  at 0.0003 and 0.0. fraction_clean is IDENTICAL across all three (0.378-0.411,
+  inside seed spread). Removing the entropy bonus entirely rescues nothing.
+  ENTROPY IS A PASSENGER, NOT A CAUSE.
+
+ARM 2 -- potential_baseline_alpha
+  alpha000: EV 0.0003 -> 0.9996 over 131 updates. adv_std 7.89 -> 1.05.
+            clean 0.280 -> 0.426 (peak upd 71) -> 0.388 (upd 131).
+  alpha=1 (ent0030): EV = 1.0000 from update 1. clean flat 0.39 throughout.
+
+  This is the mechanism in one curve. With alpha=0 the critic starts ignorant
+  of Phi, so the shaping is NOT absorbed, advantages are large (7.9), and the
+  policy improves (0.28 -> 0.426). As the critic learns Phi (EV -> 0.9996) the
+  shaping gets absorbed, advantages collapse (-> 1.05), and the policy stops
+  improving and DECAYS BACK to the same 0.39 plateau.
+
+  Potential-based shaping supplies policy gradient only while the critic is
+  WRONG about Phi. Once EV -> 1 it is inert. alpha only sets WHEN that happens:
+  alpha=1 starts absorbed (no learning ever), alpha=0 absorbs over ~70 updates
+  and buys one transient bump. Neither endpoint works -- as pre-registered.
+
+WHY: THE UNSHAPED OBJECTIVE IS EMPTY
+  1. r_gen (reward minus shaping) is CONSTANT: -0.2000/step, std 0.000000,
+     one unique value over 3000 steps. It is just -TIME_COST.
+  2. finished_clean = 0.0 on EVERY update of all five runs. The FINISH_BONUS
+     has fired ZERO times in >160M steps. worst_residual RISES (0.050 -> 0.062
+     -0.088), so completion is not being approached.
+  => The unshaped MDP's return is identical for every policy. Its advantages
+     are identically zero. At alpha=1 PPO computes exactly those advantages,
+     which is why the signal is exactly zero rather than merely weak.
+
+  Confirmed in closed form: at alpha=1 the learned head f = value_mean +
+  200*phi_mean must converge to r_gen/(1-gamma) = -0.2/0.001 = -200.0.
+  Measured, identically in all three ent runs:
+     upd    1   f =    0.4   (0% -- zeroed head at init, as designed)
+     upd   40   f =  -87.8   (44%)
+     upd  100   f = -105.1   (53%)
+     upd  159   f = -112.9   (56%)
+  40M steps of training to get 56% of the way to a constant computable by hand.
+  That is the critic's entire job in this configuration.
+
+SECOND, INDEPENDENT DEFECT: HORIZON MISMATCH
+  gamma = 0.999 -> effective horizon 1/(1-gamma) = 1000 steps = 3.3 min.
+  Episode = 4500 steps = 15.0 min. The agent cannot see the end of its episode.
+  gamma^4500 = 0.0111, so FINISH_BONUS=400 is worth 4.43 reward units at
+  episode start, against -200 of accumulated time cost over the same horizon
+  -- a ratio of 0.022. Even if completion were reachable it would be invisible.
+     gamma=0.9995 -> horizon  2000 steps ( 6.7 min), g^4500 = 0.105
+     gamma=0.9998 -> horizon  5000 steps (16.7 min), g^4500 = 0.407
+     gamma=0.9999 -> horizon 10000 steps (33.3 min), g^4500 = 0.638
+
+CONCLUSION
+  Not a tuning problem, and not fixable by any value of alpha or ent_coef. The
+  reward is a sparse terminal-reward problem whose terminal event is
+  unreachable and, if reached, discounted to ~1%. The dense shaping made this
+  look like a working dense-reward problem; it was masking an empty objective.
+  The apparent learning in T1 was the transient in the alpha000 curve above.
+
+  EV=1.0000 was never a sign of a healthy critic. It reports that the analytic
+  offset explains all target variance. EV_f (0.16-0.38, not trending up) is the
+  honest number and should be the one on the dashboard.
+
+PREDICTION SCORECARD (kept honestly)
+  ent arm: predicted null, all three degrade equally, entropy a passenger.
+    CORRECT, including its own falsification test -- I said that if ent0000
+    held up where ent0030 collapsed the r_gen story would be incomplete. It
+    did not; ent0000 is flat too.
+  alpha arm: predicted alpha=0 would improve above the plateau and give a
+    usable signal. HALF WRONG. It does exceed the plateau (0.426 vs 0.39) but
+    the gain is transient and reverts. The substantive claim -- a usable
+    signal -- is wrong.
+  Running record on mechanism predictions: 2 of 9, and both hits were derived
+  from first principles rather than intuited. Every intuited one has missed.

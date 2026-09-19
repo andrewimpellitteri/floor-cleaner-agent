@@ -25,3 +25,6 @@ checkpoints/
 *.mp4
 *.png
 !room_pics/*
+
+# Shop media drops: keep the bytes out of git history
+*.zip
