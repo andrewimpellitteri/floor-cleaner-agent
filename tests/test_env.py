@@ -6,8 +6,9 @@ The reward is only a faithful measurement instrument if these hold:
 1. Shaping telescopes: summed (reward + time cost) over any stretch equals
    REWARD_SCALE * (Phi_final - Phi_initial). If this fails, the agent is being
    paid for something other than progress.
-2. No free reward: a parked wand earns (approximately) -TIME_COST*dt and
-   nothing more.
+2. No free reward: a parked wand earns only the known discount drizzle, and
+   is charged the genuine costs (TIME_COST*dt plus DIRT_COST*remaining*dt)
+   on top of it. Nothing about standing still is profitable.
 3. Truncation is not termination.
 4. reset is deterministic given a key; vmap and jit both work.
 5. Overshoot is possible: a hard push near the trough can drive grit onto the
@@ -27,6 +28,7 @@ from floorclean.env import (
     COST_BOUND,
     COST_DEPOSITED,
     COST_SUSPENDED,
+    DIRT_COST,
     FINISH_BONUS,
     REWARD_SCALE,
     TIME_COST,
@@ -42,12 +44,22 @@ def fresh_state(env: CleaningEnv, key: jax.Array) -> EnvState:
 
 
 def rollout(env: CleaningEnv, state: EnvState, actions):
-    """Step with a fixed action sequence; return (final_state, summed reward)."""
+    """Step with a fixed action sequence.
+
+    Returns (final_state, summed reward, summed genuine cost), where the
+    genuine cost is everything in the reward that is NOT shaping:
+    TIME_COST*dt plus DIRT_COST*remaining*dt. The dirt term varies step to
+    step, so it has to be accumulated here rather than multiplied out
+    afterwards -- callers that want "shaping only" add this back.
+    """
+    dt = env.cfg.sim.control_dt
     total = 0.0
+    genuine = 0.0
     for a in actions:
-        state, _, r, term, trunc, _ = env.step(state, jnp.array(a))
+        state, _, r, term, trunc, info = env.step(state, jnp.array(a))
         total += float(r)
-    return state, total
+        genuine += TIME_COST * dt + DIRT_COST * float(info["remaining_kg"]) * dt
+    return state, total, genuine
 
 
 def test_shaping_telescopes():
@@ -69,11 +81,14 @@ def test_shaping_telescopes():
 
     # A plausible working action: move, hold the wand mid-height, moderate tilt.
     actions = [(0.4, -0.6, 0.0, 0.1, 0.3)] * 40
-    final, total_r = rollout(env, state, actions)
+    final, total_r, genuine_cost = rollout(env, state, actions)
 
-    time_cost = 40 * TIME_COST * env.cfg.sim.control_dt
+    # Add back every non-shaping term the env charged (time AND dirt), leaving
+    # the shaping sum alone. DIRT_COST makes this step-dependent, so it comes
+    # from the rollout rather than n*constant.
     phiT = float(final.potential)
-    assert total_r + time_cost == pytest.approx(REWARD_SCALE * (phiT - phi0), rel=1e-4, abs=1e-6)
+    assert total_r + genuine_cost == pytest.approx(
+        REWARD_SCALE * (phiT - phi0), rel=1e-4, abs=1e-6)
 
 
 def test_env_discount_matches_trainer_gamma():
@@ -103,18 +118,20 @@ def test_no_free_reward():
     n = 20
     # action: [x, y, azimuth rate, standoff target, tilt target]
     parked = [(0.0, 0.0, 0.0, 1.0, 0.0)] * n
-    final, total_r = rollout(env, state, parked)
+    final, total_r, genuine_cost = rollout(env, state, parked)
 
     # With discount gamma < 1, a parked wand earns the known discount drizzle
     # SCALE*(gamma-1)*Phi0 per step (Phi < 0, so this is positive) -- part of
     # the Ng-invariant transform, not farmable progress. Anything beyond it is.
     drizzle = REWARD_SCALE * (env.discount - 1.0) * phi0
-    time_cost = n * TIME_COST * env.cfg.sim.control_dt
-    per_step = (total_r + time_cost) / n  # mean shaping only
+    per_step = (total_r + genuine_cost) / n  # mean shaping only
     scale = abs(REWARD_SCALE * phi0)
     assert abs(per_step - drizzle) < 0.01 * scale / n
-    # And the time cost really is being charged on top of the drizzle.
-    assert abs((total_r - n * drizzle) + time_cost) < 0.01 * scale / n
+    # And the genuine costs really are charged on top of the drizzle. A parked
+    # wand removes almost nothing, so its dirt cost stays near the starting
+    # load -- that it is charged AT ALL is the point here.
+    assert abs((total_r - n * drizzle) + genuine_cost) < 0.01 * scale / n
+    assert genuine_cost > n * TIME_COST * env.cfg.sim.control_dt
 
 
 def test_truncation_is_not_termination():
@@ -187,7 +204,7 @@ def test_overshoot_possible():
         return float(jnp.sum(jnp.where(far, res, 0.0)) * fc.cell_area)
 
     before = far_side(state)
-    state, _ = rollout(env, state, [(0.0, -1.0, 0.0, 0.4, 0.9)] * 100)
+    state, _, _ = rollout(env, state, [(0.0, -1.0, 0.0, 0.4, 0.9)] * 100)
 
     # The bar is deliberately low: this guards EXISTENCE of the failure mode
     # (a few tenths of a gram crossing), not its magnitude.
@@ -234,12 +251,19 @@ def test_wiewiora_offset_cancels_drizzle():
     state = fresh_state(env, jax.random.PRNGKey(11))
     phi0 = float(state.potential)
     dt = env.cfg.sim.control_dt
-    state2, _, r, term, _trunc, _info = env.step(state, jnp.zeros(5))
+    state2, _, r, term, _trunc, info = env.step(state, jnp.zeros(5))
     phi1 = float(state2.potential)
     v0, v1 = -REWARD_SCALE * phi0, -REWARD_SCALE * phi1
     r_gen = float(r) - REWARD_SCALE * (gamma * phi1 - phi0)
     delta = float(r) + gamma * float(jnp.where(term, 0.0, v1)) - v0
-    expected = -TIME_COST * dt + (FINISH_BONUS if bool(term) else 0.0)
+    # r_gen is the GENUINE reward, which is no longer just the time cost: it
+    # also carries DIRT_COST*remaining*dt. That term is the whole reason the
+    # objective is non-empty (see DIRT_COST in env.py), so the expected value
+    # here must include it -- and the point of this test is unchanged, namely
+    # that the SHAPING cancels out of the TD residual exactly.
+    expected = (-TIME_COST * dt
+                - DIRT_COST * float(info["remaining_kg"]) * dt
+                + (FINISH_BONUS if bool(term) else 0.0))
     # Tolerance is set by float32 cancellation, not by the algebra. Both r_gen
     # and delta recover a ~0.2-sized quantity by subtracting two numbers of
     # size REWARD_SCALE*|Phi| (~545 here), so the achievable precision is a few

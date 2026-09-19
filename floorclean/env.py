@@ -139,6 +139,34 @@ WEIGHT_THOROUGHNESS = 1.0
 # carry the whole signal.
 REWARD_SCALE = 200.0
 TIME_COST = 1.0  # per second of simulated work -- the objective being minimised
+
+# Cost of grit still on the floor, per kg per second. THIS IS WHAT MAKES THE
+# OBJECTIVE NON-EMPTY, and it was added on direct evidence rather than taste.
+#
+# Before it, the genuine (unshaped) reward was `-TIME_COST*dt + FINISH_BONUS*
+# done_clean`. Measured over 3000 steps, that came to a single unique value:
+# mean -0.2000, std 0.000000. The finish bonus fired exactly zero times in
+# 750M steps across five training configurations, and a 90-minute run of the
+# best scripted strategy showed why -- fraction_clean flatlines at 0.923 with
+# a hard 7.7% residual, so "every cell under threshold" is not merely unreached
+# but UNREACHABLE. A constant reward has identically zero advantages, which is
+# precisely what the ablation measured, and no value of gamma, ent_coef or the
+# Wiewiora offset can recover a gradient that is not there.
+#
+# Note this is a genuine cost, NOT more shaping: potential-based shaping is
+# policy-invariant by construction (Ng et al. 1999) and therefore cannot supply
+# the missing objective. Paying per second for dirt still on the floor makes
+# the agent minimise the time-integral of remaining grit, which is the actual
+# job. It is not farmable -- the only way to reduce it is to remove grit.
+#
+# Scale: a fresh floor carries ~1.18 kg, so at 1.0 the dirt and time terms
+# start out comparable and the dirt term decays as the floor cleans.
+DIRT_COST = 1.0
+
+# Kept, but note it currently never fires: no policy tested, scripted or
+# learned, reaches "every cell under clean_threshold". See issue #2 -- the
+# criterion is stricter than the operator's real "the floor looks good"
+# standard, which the 90-minute curve puts at roughly 70% of cells at 30 min.
 FINISH_BONUS = 400.0
 
 
@@ -498,12 +526,21 @@ class CleaningEnv:
         # gamma here must be the trainer's discount -- the difference telescopes
         # to the true objective only then, and only because mass is conserved.
         shaping = REWARD_SCALE * (self.discount * new_state.potential - state.potential)
-        reward = shaping - TIME_COST * dt + FINISH_BONUS * done_clean
+
+        remaining = jnp.sum(residual * self.floor_mask) * cfg.floor.cell_area
+
+        # The genuine (unshaped) reward. DIRT_COST is the term that makes this
+        # objective well-posed at all; see its definition for the measurement
+        # that forced it. Without it the unshaped reward is -TIME_COST*dt plus
+        # an event that never occurs, i.e. a constant, and PPO's advantages are
+        # then identically zero no matter how the critic is parameterised.
+        reward = (shaping
+                  - TIME_COST * dt
+                  - DIRT_COST * remaining * dt
+                  + FINISH_BONUS * done_clean)
 
         truncated = new_state.step >= cfg.sim.max_steps
         terminated = done_clean
-
-        remaining = jnp.sum(residual * self.floor_mask) * cfg.floor.cell_area
         # In the trough but not yet down the drain: the pond's sediment load.
         # `drained_kg` is what LEFT; `delivered_kg` is what reached the trough.
         # They were the same number while the trough was a perfect sink.

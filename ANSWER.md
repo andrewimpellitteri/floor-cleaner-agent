@@ -76,28 +76,36 @@ This was verified to be water-invariant (15.6 / 15.9 / 16.0% across a wide range
 of ambient flow, ±2.0), which is what you expect from a pressure threshold
 rather than a flow effect.
 
-## 5. Stand the wand up, especially in the traffic lanes — LIKELY
+## 5. Stand the wand up — CONFIDENT, AND THE BIGGEST SINGLE LEVER
 
-From Andrew's own measurements (12 in standoff, jet landing 12–18 in ahead,
-i.e. 45–56° off vertical):
+From Andrew's own measurements: 12 in standoff, jet landing 12–18 in ahead,
+which fixes the wand tilt at 45–56° off vertical.
 
-| lead distance | tilt | cutting pressure | vs worn-lane yield |
+Run to completion, 6 seeds, 30 min, standoff held at his 12 in:
+
+| lead | tilt | clean (no worn lanes) | clean (worn lanes on) |
 |---|---|---|---|
-| 12 in | 45° | 8.70 kPa | **1.58× — cuts** |
-| 18 in | 56° | 3.28 kPa | **0.60× — does not cut** |
+| 7.4 in | 31.5° | 0.682 | 0.680 |
+| **12 in** | **45°** | **0.703** | 0.672 |
+| 18 in | 56° | **0.407** | **0.322** |
 
-A small wrist movement changes cutting pressure by **2.6×** and crosses the
-threshold at which worn lanes stop responding at all.
+**Going from a 12 in lead to an 18 in lead costs 30–35 points of clean**
+(+0.296 at 3.9 sd with worn lanes off, +0.351 at 4.5 sd with them on). That is
+the largest single effect measured anywhere in this project, and it comes from
+a change of wrist angle.
 
-Independent support, from a prior experiment recorded in `baselines.py`: an
-earlier default of 54° "pushed well but delivered only 1.1x adhesion, so it
+It does **not** depend on the disputed worn-lane assumption: the collapse is
+just as large with worn lanes switched entirely off. The mechanism is the base
+yield stress — at 56° the jet delivers 3.28 kPa into a floor whose grit holds
+at 2500 ± 1000 Pa, so it fails to cut a large fraction of *ordinary* floor, not
+just the worn strips.
+
+Independent corroboration, from a prior experiment recorded in `baselines.py`:
+an earlier default of 54° "pushed well but delivered only 1.1x adhesion, so it
 swept the loose layer to the trough and left the adhered grit untouched — the
-floor stopped getting cleaner after about two minutes." 54° is inside Andrew's
-stated range.
+floor stopped getting cleaner after about two minutes."
 
-Labelled LIKELY rather than CONFIDENT because the worn-lane threshold depends on
-`worn_lane_boost`, which is an estimate the current photos do not clearly
-support. A direct outcome test is running.
+Anywhere in 31–45° is fine. 56° is a cliff.
 
 ## 6. More water does not clean better — CONFIDENT
 
@@ -117,13 +125,22 @@ noise**, with the sign flipping between water levels. Do not worry about it.
 
 ## What this does NOT establish
 
-**The absolute times are not validated.** The simulation never fully finishes:
-the best strategy reaches 72% of cells under threshold in 30 minutes and leaves
-a worst-cell residual 47× over the limit. Andrew reports ~30 minutes for a deep
-clean where "the floor looks good". Those two statements are not yet reconciled,
-and the most likely explanation is that the simulator's completion test —
-*every single cell* under 2 g/m² — is a stricter standard than "looks good"
-(issue #2). **Treat the rankings as the result and the clock as unvalidated.**
+**The clock is now partly validated — and the completion criterion is what was
+wrong.** A 90-minute run of the best strategy from a fresh floor:
+
+| min | 15 | 30 | 45 | 60 | 75 | 90 |
+|---|---|---|---|---|---|---|
+| fraction clean | 0.362 | **0.699** | 0.856 | 0.919 | 0.921 | **0.923** |
+
+It reaches **70% of cells at 30.5 minutes**, against Andrew's ~30 minutes for a
+deep clean where "the floor looks good". Those agree. What does not agree is the
+simulator's completion test: the curve **flatlines at 92.3%** and never reaches
+95%, let alone 100%. Improvement over the final 15 minutes is +0.011 %-clean per
+minute — a hard residual of 7.7% of cells, worst one 19x over threshold.
+
+So the physics timing looks right and "every single cell under 2 g/m²" is a
+standard no operator applies and no strategy can meet (issue #2). Read the
+30-minute numbers as the operating point; ignore the completion flag.
 
 **The learned policy is not part of this answer.** Reinforcement learning was
 attempted and does not currently work, for a well-understood reason: the reward
