@@ -110,6 +110,55 @@ def episode_elevation(key: jax.Array, cfg: Config, floor: Floor) -> jnp.ndarray:
     return floor.z + fc.flat_spot_amplitude * bumps * (1.0 - floor.trough)
 
 
+def ambient_source(cfg: Config, floor: Floor) -> jnp.ndarray:
+    """Ambient rinse inflow per cell, m/s of depth added.
+
+    Integrates to `FloorConfig.ambient_inflow` over the section for every
+    layout, so switching geometry changes only WHERE the water lands, never how
+    much -- which is what makes the layouts comparable (issue #1). A test pins
+    the integral.
+
+    The real bay has no uniform rain: two taps at the room midpoints, and the
+    awnings dripping on the bar as a line source. `uniform` is kept only to
+    reproduce results from before 2026-09-19.
+    """
+    fc = cfg.floor
+    total = fc.ambient_inflow                      # m^3/s over the section
+    area = fc.length_x * fc.length_y
+    layout = fc.ambient_layout
+
+    if layout == "uniform":
+        return jnp.full((fc.nx, fc.ny), total / area)
+
+    def blob(field: jnp.ndarray, q: float) -> jnp.ndarray:
+        """Normalise a shape to deliver exactly `q` m^3/s."""
+        integral = jnp.sum(field) * fc.cell_area
+        return field * (q / jnp.maximum(integral, 1e-12))
+
+    def taps(q: float) -> jnp.ndarray:
+        # One at each wall, at mid-length along the trough. Half of q each.
+        cx = fc.length_x * 0.5
+        g = jnp.zeros((fc.nx, fc.ny))
+        for cy in (fc.tap_wall_offset, fc.length_y - fc.tap_wall_offset):
+            r2 = (floor.x - cx) ** 2 + (floor.y - cy) ** 2
+            g = g + jnp.exp(-r2 / (2.0 * fc.tap_sigma ** 2))
+        return blob(g, q)
+
+    def bar(q: float) -> jnp.ndarray:
+        # A line along x: the awnings draining while the floor is worked.
+        g = jnp.exp(-((floor.y - fc.bar_y) ** 2) / (2.0 * fc.bar_sigma ** 2))
+        return blob(g * jnp.ones_like(floor.x), q)
+
+    if layout == "two_tap":
+        return taps(total)
+    if layout == "bar":
+        return bar(total)
+    if layout == "real":
+        f = fc.bar_fraction
+        return bar(total * f) + taps(total * (1.0 - f))
+    raise ValueError(f"unknown ambient_layout {layout!r}")
+
+
 def initial_water(key: jax.Array, cfg: Config, z: jnp.ndarray) -> jnp.ndarray:
     """Standing water at the start of an episode.
 

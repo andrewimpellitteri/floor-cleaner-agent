@@ -37,7 +37,7 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
-from .env import CleaningEnv, Obs
+from .env import REWARD_SCALE, CleaningEnv, Obs
 from .networks import ActorCritic, entropy, log_prob
 
 
@@ -79,10 +79,11 @@ class PPOConfig:
 class Transition(NamedTuple):
     done: jnp.ndarray  # episode boundary (terminated OR truncated)
     action: jnp.ndarray
-    value: jnp.ndarray
+    value: jnp.ndarray  # full V(s) = f(s) - SCALE*Phi(s), never the residual alone
     reward: jnp.ndarray  # already bootstrap-adjusted for truncation
     log_prob: jnp.ndarray
     obs: Obs
+    phi: jnp.ndarray  # Phi(s_t) pre-step, (num_envs,) -- pairs with obs
 
 
 class RunnerState(NamedTuple):
@@ -151,11 +152,23 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             train_state, env_state, last_obs, rng = runner
             rng, k_act, k_reset = jax.random.split(rng, 3)
 
-            mean, log_std, value = network.apply(train_state.params, last_obs)
+            # Wiewiora 2003 (issue #4): V(s) = f(s) - SCALE*Phi(s), so the
+            # shaping drizzle cancels analytically in delta (delta = r_gen +
+            # gamma*f' - f). The network returns the residual f; the offset
+            # uses the cached EnvState.potential (already paid for in env.step).
+            # phi_pre MUST be read before env_step shadows env_state -- after
+            # is off-by-one (pairs V(s_t) with Phi(s_{t+1})).
+            phi_pre = env_state.potential
+            mean, log_std, f_pre = network.apply(train_state.params, last_obs)
+            value = f_pre - REWARD_SCALE * phi_pre
             action = mean + jnp.exp(log_std) * jax.random.normal(k_act, mean.shape)
             logp = log_prob(mean, log_std, action)
 
             env_state, obs, reward, terminated, truncated, info = env_step(env_state, action)
+            # Phi(s') pre-reset: after env_step but before the reset-select
+            # below. Using the post-reset potential here would bootstrap the
+            # fresh floor at truncation -- silent corruption of Pardo's boundary.
+            phi_next_pre_reset = env_state.potential
 
             # Bootstrap through the time limit. `obs` here is still the real
             # final observation -- the reset has not happened yet. The extra
@@ -163,7 +176,8 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # envs and 4500-step episodes that is ~11% of rollout steps (see
             # the reset note below), and the physics dwarfs the network anyway.
             def with_bootstrap(_):
-                _, _, final_value = network.apply(train_state.params, obs)
+                _, _, f_final = network.apply(train_state.params, obs)
+                final_value = f_final - REWARD_SCALE * phi_next_pre_reset
                 return reward + cfg.gamma * final_value * truncated * (1.0 - terminated)
 
             def no_bootstrap(_):
@@ -203,7 +217,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
 
             transition = Transition(
                 done=done, action=action, value=value, reward=reward,
-                log_prob=logp, obs=last_obs,
+                log_prob=logp, obs=last_obs, phi=phi_pre,
             )
             metrics = {
                 "reward": reward,
@@ -215,6 +229,10 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
                 "standoff": info["standoff"],
                 "tilt": info["tilt"],
                 "drained_kg": info["drained_kg"],
+                # Issue #3: delivered (reached trough, incl. pond) vs drained
+                # (left the building). Conflating them overstates progress.
+                "delivered_kg": info["delivered_kg"],
+                "trough_grit_kg": info["trough_grit_kg"],
                 # Phase masses (T3a): cut-and-abandon shows as adhered
                 # falling while deposited climbs and drained stays flat --
                 # invisible in total reward, so it needs its own curves.
@@ -229,7 +247,10 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         )
 
         # ---------------- advantages ----------------
-        _, _, last_value = network.apply(runner.train_state.params, runner.obs)
+        # GAE seed uses the carried-forward (post-reset-selected) state, which
+        # is where the next rollout step acts from -- consistent with runner.obs.
+        _, _, f_last = network.apply(runner.train_state.params, runner.obs)
+        last_value = f_last - REWARD_SCALE * runner.env_state.potential
 
         def gae_step(carry, t):
             adv, next_value = carry
@@ -248,7 +269,10 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             train_state, rng = carry
             rng, k_perm = jax.random.split(rng)
 
-            batch = (traj.obs, traj.action, traj.log_prob, traj.value, advantages, targets)
+            # traj.phi rides the same flatten/shuffle/minibatch path with the
+            # same perm, so mb_phi stays aligned with mb_obs (both pre-step).
+            batch = (traj.obs, traj.action, traj.log_prob, traj.value,
+                     traj.phi, advantages, targets)
             flat = jax.tree.map(lambda x: x.reshape((cfg.batch_size,) + x.shape[2:]), batch)
             perm = jax.random.permutation(k_perm, cfg.batch_size)
             shuffled = jax.tree.map(lambda x: jnp.take(x, perm, axis=0), flat)
@@ -257,14 +281,18 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             )
 
             def minibatch_step(train_state, mb):
-                mb_obs, mb_action, mb_logp, mb_value, mb_adv, mb_target = mb
+                mb_obs, mb_action, mb_logp, mb_value, mb_phi, mb_adv, mb_target = mb
 
                 def loss_fn(params):
-                    mean, log_std, value = network.apply(params, mb_obs)
+                    mean, log_std, f_pred = network.apply(params, mb_obs)
+                    # Full value in V-space so traj.value/targets/EV are
+                    # untouched; the network only ever learns the residual f.
+                    value = f_pred - REWARD_SCALE * mb_phi
                     logp = log_prob(mean, log_std, mb_action)
 
                     ratio = jnp.exp(logp - mb_logp)
-                    adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
+                    adv_std = mb_adv.std()
+                    adv = (mb_adv - mb_adv.mean()) / (adv_std + 1e-8)
                     pg = -jnp.minimum(
                         ratio * adv,
                         jnp.clip(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv,
@@ -282,7 +310,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
 
                     approx_kl = ((ratio - 1.0) - jnp.log(ratio)).mean()
                     clip_frac = (jnp.abs(ratio - 1.0) > cfg.clip_eps).mean()
-                    return total, (pg, v_loss, ent, approx_kl, clip_frac)
+                    return total, (pg, v_loss, ent, approx_kl, clip_frac, adv_std)
 
                 grads, aux = jax.grad(loss_fn, has_aux=True)(train_state.params)
                 return train_state.apply_gradients(grads=grads), aux
@@ -295,7 +323,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         )
         runner = runner._replace(train_state=train_state, rng=rng)
 
-        pg, v_loss, ent, approx_kl, clip_frac = aux
+        pg, v_loss, ent, approx_kl, clip_frac, adv_std = aux
         summary = {
             "reward_mean": metrics["reward"].mean(),
             "episodes": metrics["done"].sum(),
@@ -306,19 +334,29 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             "standoff_mean": metrics["standoff"].mean(),
             "tilt_mean": metrics["tilt"].mean(),
             "drained_kg": metrics["drained_kg"].mean(),
+            "delivered_kg": metrics["delivered_kg"].mean(),
+            "trough_grit_kg": metrics["trough_grit_kg"].mean(),
             "adhered_kg": metrics["adhered_kg"].mean(),
             "deposited_kg": metrics["deposited_kg"].mean(),
             "suspended_kg": metrics["suspended_kg"].mean(),
             "policy_loss": pg.mean(),
             "value_loss": v_loss.mean(),
             # 1 = critic predicts returns perfectly; <=0 = worse than a
-            # constant. The critic must learn a -SCALE*Phi offset from ~zero
-            # init (Wiewiora 2003), so EV<=0 early is expected -- flat EV past
-            # ~50 updates means the value function, not the policy, is stuck.
+            # constant. The offset -REWARD_SCALE*Phi (~+540 dirty -> 0 clean,
+            # measured 2026-09-19) is now analytic (Wiewiora 2003): the network
+            # learns only the residual f, so EV is on the full V and stays
+            # meaningful. EV pinned near 1 with a collapsed adv_std means the
+            # critic memorised the predictable drizzle and the advantage is
+            # numerical residue -- the issue #4 failure, not a healthy critic.
             "explained_variance": (
                 1.0 - jnp.var(targets - traj.value)
                 / jnp.maximum(jnp.var(targets), 1e-8)
             ),
+            # Pre-normalisation advantage std per minibatch (issue #4 stop
+            # signal). The loss rescales mb_adv to unit variance, so a
+            # collapsing adv_std means the policy gradient keeps full magnitude
+            # while becoming directionless -- invisible in reward_mean/EV.
+            "adv_std": adv_std.mean(),
             "entropy": ent.mean(),
             "approx_kl": approx_kl.mean(),
             "clip_fraction": clip_frac.mean(),

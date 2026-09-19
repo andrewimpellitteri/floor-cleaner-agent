@@ -78,11 +78,16 @@ CSV_COLUMNS = [
     "fraction_removed", "worst_residual", "fraction_clean",
     "standoff_mean", "tilt_mean", "policy_loss", "value_loss",
     "entropy", "approx_kl", "clip_fraction", "explained_variance",
+    # Issue #4 stop signal: pre-norm advantage std. Collapses when the critic
+    # memorises the drizzle and the normalised advantage becomes noise.
+    "adv_std",
     # T3a — the cut-and-abandon panel: adhered falling while deposited climbs
     # and drained stays flat is the characteristic failure, invisible in
     # reward. Logged everywhere (CSV + W&B) so pinning them to one dashboard
     # panel is one click.
-    "drained_kg", "adhered_kg", "deposited_kg", "suspended_kg",
+    # Issue #3: delivered (reached trough, incl. pond) vs drained (left).
+    "drained_kg", "delivered_kg", "trough_grit_kg",
+    "adhered_kg", "deposited_kg", "suspended_kg",
     "seconds",
 ]
 

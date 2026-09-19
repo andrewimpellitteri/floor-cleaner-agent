@@ -62,6 +62,18 @@ class FloorConfig:
     trough_width: float = 0.20  # m
     trough_depth: float = 0.04  # m below the surrounding slab
 
+    # Depth of standing water the trough CANNOT get rid of. Andrew: "trough has
+    # a small pond near base due to warping and wear of room and painting and
+    # fiberglass" -- two years past recoat the channel has settled, so a low
+    # spot retains a puddle no matter how well the drain flows. Modelling the
+    # trough as a perfect sink (issue #3) made it infinitely thirsty.
+    #
+    # A GUESS at "small pond", and the calibration knob for it. 5 mm is a puddle
+    # you would notice but not one you would wade. It must stay well below
+    # `trough_depth` (40 mm) or the channel stops being a channel. Setting it to
+    # 0.0 restores the old perfect-sink behaviour exactly.
+    trough_retain_depth: float = 5.0e-3  # m
+
     # Manning's n for shallow flow. A grit-broadcast epoxy hangar floor sits
     # between smooth epoxy (~0.011) and broom-finished concrete (~0.030): the
     # anti-slip aggregate is the roughness that matters at film depths.
@@ -106,6 +118,38 @@ class FloorConfig:
     # the 1-4 people Andrew describes working the bay together, and is worth
     # testing directly in T7 rather than assuming.
     ambient_inflow_gpm: float = 8.0
+
+    # WHERE that water lands, which matters as much as how much of it there is.
+    # Andrew (2026-09-18): "even if you run continuous water through the faucets
+    # without power washing it doesn't really clean it from a point source."
+    # There are two taps at the midpoints of the room, four power washers in the
+    # corners, and the floor is washed while the awnings drain on the bar. So the
+    # real supply is a line source plus two points -- never a uniform rain, and
+    # you cannot flood the bay by opening a tap.
+    #
+    # Measured at equal total Q (8 gpm, 8 seeds, jet-free, issue #1): geometry
+    # changes the wetted STRUCTURE, not just the amount, and not in the direction
+    # first assumed. Concentrating the flow RAISES the mobile fraction
+    # (0.268+-0.075 two-tap vs 0.200+-0.032 uniform) while LOWERING the median
+    # depth: point sources trade a dead majority for a live channel. Uniform rain
+    # wets everything uselessly; a tap wets a little of it usefully.
+    #
+    #   "uniform"  -- spread evenly. Physically unavailable in the real bay;
+    #                 retained because every result before 2026-09-19 used it.
+    #   "two_tap"  -- two Gaussians at the room midpoints, one at each wall.
+    #   "bar"      -- a line source along x, under the draining awnings.
+    #   "real"     -- `bar_fraction` of Q on the bar, the rest split between the
+    #                 two taps. THE DEFAULT, because it is what the bay does.
+    ambient_layout: str = "real"
+    # Split between the two source kinds. A GUESS -- the taps are visible and
+    # countable, the drip rate off the bar is not. Calibration knob, and the
+    # first thing to vary if the wetted pattern looks wrong against a photo.
+    bar_fraction: float = 0.5
+    # Placement. x runs ALONG the trough, y ACROSS it (see ORIENTATION).
+    tap_sigma: float = 0.15       # m, spread of a tap's footprint
+    tap_wall_offset: float = 0.30  # m in from each wall
+    bar_sigma: float = 0.25       # m, width of the drip line
+    bar_y: float = 0.40            # m from the y=0 wall
 
     @property
     def nx(self) -> int:

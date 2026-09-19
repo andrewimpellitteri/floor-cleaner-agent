@@ -51,7 +51,9 @@ from .config import Config
 from .geometry import Floor
 
 # Time constant for water and slurry disappearing down the trough once they
-# reach it. Fast compared with everything else: the trough is the sink.
+# reach it, for the part of the film that is ABOVE the retained puddle. Fast
+# compared with everything else. See `FloorConfig.trough_retain_depth` for why
+# the trough is not simply a perfect sink.
 TROUGH_DRAIN_TAU = 0.4  # s
 
 
@@ -277,18 +279,35 @@ def physics_substep(
     dep = dep - from_dep + settling
     susp = susp + from_bound + from_dep - settling
 
-    # --- the trough: everything that reaches it is gone --------------------
+    # --- the trough: a sink, but NOT a perfect one -------------------------
+    # Andrew (2026-09-18): "trough has a small pond near base due to warping and
+    # wear of room and painting and fiberglass." Two years past recoat the
+    # channel has settled, so a low spot holds water that simply cannot run out
+    # -- the drain is not the constraint, the geometry is. Modelling it as a
+    # perfect sink (issue #3) made the trough infinitely thirsty and meant grit
+    # reaching it always left the building.
+    #
+    # So only the depth ABOVE the retained puddle can leave. Below that line
+    # water and grit pond and stay. Note this cuts both ways: a permanent pond
+    # at the lip is a permanently wet zone, which HELPS transport over the last
+    # stretch of every push -- the hardest part of the job.
     drain = floor.trough * (1.0 - jnp.exp(-dt / TROUGH_DRAIN_TAU))
+    retain = floor.trough * fc.trough_retain_depth
+    drainable = jnp.maximum(h - retain, 0.0)
+    # Effective removal fraction: `drain` scaled by how much of the film is
+    # actually above the lip. Tends to `drain` for a deep film, exactly 0 once
+    # the film is down to the retained puddle.
+    eff = drain * drainable / jnp.maximum(h, fc.h_min)
 
     # Settled grit in the trough only leaves when there is water running over it
     # to flush it away. Without this gate, grit lying at the lip would drain on
     # its own -- free progress for an agent that does nothing.
     flush = jnp.clip(h / (4.0 * fc.h_min), 0.0, 1.0)
-    removed = susp * drain + dep * drain * flush
+    removed = susp * eff + dep * eff * flush
 
-    susp = susp - susp * drain
-    dep = dep - dep * drain * flush
-    h = h - h * drain
+    susp = susp - susp * eff
+    dep = dep - dep * eff * flush
+    h = h - h * eff
 
     drained = state.drained + jnp.sum(removed) * fc.cell_area
 

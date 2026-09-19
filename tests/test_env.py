@@ -203,3 +203,146 @@ def test_shaping_weights_are_ordered():
     assert COST_BOUND > COST_DEPOSITED > COST_SUSPENDED > 0.0
     assert ALPHA_DISTANCE > 0.0
     assert FINISH_BONUS > 0.0
+
+
+def test_ambient_source_conserves_total_flow():
+    """Every layout delivers the SAME total water -- geometry is not a volume knob.
+
+    The point of `ambient_layout` is to change WHERE the rinse lands without
+    changing how much of it there is (issue #1). If the layouts did not
+    integrate to the same Q, any comparison between them would be confounded by
+    flow rate, which is the one thing the A/B is supposed to hold fixed.
+    """
+    import dataclasses as _dc
+
+    from floorclean.geometry import ambient_source, build_floor
+
+    base = Config()
+    for layout in ("uniform", "two_tap", "bar", "real"):
+        cfg = _dc.replace(base, floor=_dc.replace(base.floor, ambient_layout=layout))
+        src = ambient_source(cfg, build_floor(cfg))
+        q = float(jnp.sum(src) * cfg.floor.cell_area)
+        assert q == pytest.approx(cfg.floor.ambient_inflow, rel=2e-2), layout
+        assert float(jnp.min(src)) >= 0.0, layout
+
+
+def test_ambient_layouts_differ_in_shape():
+    """...and that they are genuinely different distributions, not the same field.
+
+    Guards against a layout silently falling back to uniform: the concentrated
+    ones must be markedly more unequal. Measured jet-free at equal Q, the real
+    bay's layouts reach a HIGHER mobile fraction than uniform rain despite a
+    LOWER median depth -- they trade a dead majority for a live channel.
+    """
+    import dataclasses as _dc
+
+    from floorclean.geometry import ambient_source, build_floor
+
+    base = Config()
+
+    def spread(layout):
+        cfg = _dc.replace(base, floor=_dc.replace(base.floor, ambient_layout=layout))
+        src = np.asarray(ambient_source(cfg, build_floor(cfg)))
+        return src.std() / max(src.mean(), 1e-12)
+
+    uniform = spread("uniform")
+    assert uniform < 1e-6, "uniform layout is not uniform"
+    for layout in ("two_tap", "bar", "real"):
+        assert spread(layout) > 0.5, layout
+
+
+def test_env_uses_the_configured_ambient_layout():
+    """The env must actually consume the field, not rebuild a uniform one."""
+    import dataclasses as _dc
+
+    from floorclean.geometry import ambient_source, build_floor
+
+    cfg = Config()
+    env = CleaningEnv(cfg)
+    expected = ambient_source(cfg, build_floor(cfg))
+    assert jnp.allclose(env.ambient, expected)
+    # and the default is the real bay, not the physically unavailable rain
+    assert cfg.floor.ambient_layout == "real"
+
+
+def test_trough_retains_a_pond_but_still_drains():
+    """The trough is a sink, not a perfect one (issue #3).
+
+    Andrew: "trough has a small pond near base due to warping and wear". Water
+    above the retained depth must still leave -- otherwise the bay floods -- but
+    the puddle itself must stay. Setting `trough_retain_depth = 0` has to
+    restore the old perfect-sink behaviour exactly, which is what makes this a
+    modelling choice rather than a behaviour change hidden in the physics.
+    """
+    import dataclasses as _dc
+
+    def pond_after(retain, steps=900):
+        cfg = _dc.replace(Config(),
+                          floor=_dc.replace(Config().floor, trough_retain_depth=retain))
+        env = CleaningEnv(cfg)
+        state = env.fresh_state(jax.random.PRNGKey(0))
+        act = jnp.array([0.0, 0.0, 0.0, 0.0, 0.0])
+
+        def step(s, _):
+            s, _o, _r, _t, _tr, info = env.step(s, act)
+            return s, info["pond_m3"]
+
+        _s, trace = jax.jit(lambda s: jax.lax.scan(step, s, None, length=steps))(state)
+        return float(trace[-1])
+
+    ponded = pond_after(5.0e-3)
+    perfect_sink = pond_after(0.0)
+
+    assert ponded > 5.0 * perfect_sink, (
+        f"retained pond {ponded:.4g} m^3 is not meaningfully more than the "
+        f"perfect sink's {perfect_sink:.4g}")
+    # ...and it is a puddle, not a reservoir: bounded by depth x trough area.
+    fc = Config().floor
+    cap = 5.0e-3 * fc.trough_width * fc.length_x * 1.5
+    assert ponded < cap, f"pond {ponded:.4g} m^3 exceeds the retainable {cap:.4g}"
+
+
+def test_delivered_is_at_least_drained():
+    """`drained` is what left the building; `delivered` also counts the pond.
+
+    They were the same number while the trough was a perfect sink, and the
+    workboard read `drained_kg` as "left the floor" throughout. With a pond they
+    differ, and conflating them would overstate progress.
+    """
+    env = CleaningEnv(Config())
+    state = env.fresh_state(jax.random.PRNGKey(0))
+    act = jnp.array([0.0, 0.0, 0.0, -1.0, 1.0])
+
+    def step(s, _):
+        s, _o, _r, _t, _tr, info = env.step(s, act)
+        return s, jnp.stack([info["drained_kg"], info["delivered_kg"]])
+
+    _s, tr = jax.jit(lambda s: jax.lax.scan(step, s, None, length=400))(state)
+    drained, delivered = np.asarray(tr).T
+    assert np.all(delivered >= drained - 1e-9)
+    assert delivered[-1] > 0.0
+
+
+def test_floor_cleanliness_ignores_the_trough():
+    """Grit sitting in the trough has left the FLOOR, which is the job.
+
+    Once the trough can retain grit, counting its cells would make `done_clean`
+    unreachable and would have the shaping term penalise delivery -- the exact
+    opposite of the intended incentive.
+    """
+    env = CleaningEnv(Config())
+    state = env.fresh_state(jax.random.PRNGKey(0))
+    in_trough = (env.floor.trough >= 0.5)
+    assert bool(jnp.any(in_trough)), "no trough cells to test with"
+
+    # A spotless floor with a heavily loaded trough must read as clean.
+    clean_floor = state.fields._replace(
+        bound=jnp.zeros_like(state.fields.bound),
+        deposited=jnp.where(in_trough, 10.0 * Config().dirt.clean_threshold, 0.0),
+        suspended=jnp.zeros_like(state.fields.suspended),
+    )
+    s2 = state._replace(fields=clean_floor)
+    _s, _o, _r, terminated, _tr, info = env.step(s2, jnp.zeros(5))
+    assert float(info["fraction_clean"]) == pytest.approx(1.0)
+    assert float(info["trough_grit_kg"]) > 0.0
+    assert bool(terminated), "a clean floor must terminate even with a loaded trough"
