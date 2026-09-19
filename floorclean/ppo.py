@@ -37,7 +37,7 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 
-from .env import REWARD_SCALE, CleaningEnv, Obs
+from .env import CleaningEnv, Obs
 from .networks import ActorCritic, entropy, log_prob
 
 
@@ -218,7 +218,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # is off-by-one (pairs V(s_t) with Phi(s_{t+1})).
             phi_pre = env_state.potential
             mean, log_std, f_pre = network.apply(train_state.params, last_obs)
-            off = cfg.potential_baseline_alpha * REWARD_SCALE
+            off = cfg.potential_baseline_alpha * env.reward_scale
             value = f_pre - off * phi_pre
             action = mean + jnp.exp(log_std) * jax.random.normal(k_act, mean.shape)
             logp = log_prob(mean, log_std, action)
@@ -309,7 +309,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         # GAE seed uses the carried-forward (post-reset-selected) state, which
         # is where the next rollout step acts from -- consistent with runner.obs.
         _, _, f_last = network.apply(runner.train_state.params, runner.obs)
-        last_value = (f_last - cfg.potential_baseline_alpha * REWARD_SCALE
+        last_value = (f_last - cfg.potential_baseline_alpha * env.reward_scale
                       * runner.env_state.potential)
 
         def gae_step(carry, t):
@@ -347,7 +347,7 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
                     mean, log_std, f_pred = network.apply(params, mb_obs)
                     # Full value in V-space so traj.value/targets/EV are
                     # untouched; the network only ever learns the residual f.
-                    value = f_pred - cfg.potential_baseline_alpha * REWARD_SCALE * mb_phi
+                    value = f_pred - cfg.potential_baseline_alpha * env.reward_scale * mb_phi
                     logp = log_prob(mean, log_std, mb_action)
 
                     ratio = jnp.exp(logp - mb_logp)
@@ -390,8 +390,8 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         # dominated by that offset and reads ~1 by construction, so it can no
         # longer tell a working critic from a drowned one. EV_f is the one that
         # can -- it is EV measured against the residual the network predicts.
-        traj_f = traj.value + cfg.potential_baseline_alpha * REWARD_SCALE * traj.phi
-        targets_f = targets + cfg.potential_baseline_alpha * REWARD_SCALE * traj.phi
+        traj_f = traj.value + cfg.potential_baseline_alpha * env.reward_scale * traj.phi
+        targets_f = targets + cfg.potential_baseline_alpha * env.reward_scale * traj.phi
         summary = {
             "reward_mean": metrics["reward"].mean(),
             "episodes": metrics["done"].sum(),

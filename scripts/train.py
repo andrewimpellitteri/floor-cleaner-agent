@@ -37,6 +37,7 @@ import tyro
 
 from floorclean.config import Config
 from floorclean.env import CleaningEnv
+from floorclean.macro import MacroEnv
 from floorclean.ppo import PPOConfig, RunnerState, init_runner, make_chunk
 from floorclean.rollout import NeuralPolicy, run_episode
 from floorclean.render import render_episode, save_still
@@ -65,6 +66,12 @@ class TrainConfig:
     # benchmark that every scripted baseline is scored against, so the eval and
     # the benchmark finally measure the same thing.
     eval_seconds: float = 1800.0
+
+    # Train over STROKES rather than 0.2 s wrist commands. See
+    # results/action_leverage.txt: the low-level action space gives each
+    # decision 0.19% of the between-floor variation, which is not learnable at
+    # this batch size; the macro space gives 3.24%.
+    macro: bool = False
     no_wandb: bool = False
 
     # Snapshot retention for model selection (S3-cost bounded by design):
@@ -158,6 +165,24 @@ def main():
         wandb_id_file.write_text(wlog.run_id)
 
     env = CleaningEnv(Config())
+    if tcfg.macro:
+        # One decision per STROKE instead of per 0.2 s control step. Measured
+        # justification in results/action_leverage.txt: a low-level action is
+        # worth 0.19% of the between-floor variation, a macro decision 3.24%
+        # -- 17x, which is the difference between an effective batch SNR of
+        # 0.36 and 5.8.
+        env = MacroEnv(env)
+        # A macro-step spans K control steps, so the trainer must discount by
+        # gamma**K. Overriding rather than asking the user to pass it: the
+        # correct value depends on MACRO_STEPS and getting it wrong silently
+        # rescales every value estimate, which the guard below would not catch
+        # if the user simply passed a self-consistent wrong pair.
+        ppo = dataclasses.replace(ppo, gamma=env.discount)
+        print(f"[macro] one decision = {env.macro_steps} control steps "
+              f"({env.macro_steps * env.cfg.sim.control_dt:.1f}s); "
+              f"{env.cfg.sim.max_steps // env.macro_steps} decisions/episode; "
+              f"gamma {env.discount:.6f} (= {CleaningEnv().discount}^{env.macro_steps})")
+
     # The shaping term F = gamma*Phi(s') - Phi(s) is policy-invariant only for
     # the gamma the optimiser discounts with. The unit test pins the defaults;
     # this pins the actual run, since tyro overrides can split them silently.

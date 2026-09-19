@@ -182,6 +182,11 @@ class CleaningEnv:
         # per-step error (1-gamma)*Phi dwarfs TIME_COST (B2). Kept as a parameter
         # (rather than imported) because ppo imports this module, not vice versa.
         self.discount = discount
+        # The reward scale the TRAINER should use for the Wiewiora offset
+        # V = f - alpha*scale*Phi. A wrapper that rescales rewards (see
+        # macro.MacroEnv) must rescale this in step, or the offset no longer
+        # cancels the shaping it was derived to cancel.
+        self.reward_scale = REWARD_SCALE
         self.floor = build_floor(self.cfg)
 
         # Where the ambient rinse lands (issue #1). Built once: it depends only
