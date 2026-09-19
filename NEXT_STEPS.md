@@ -3,21 +3,17 @@
 Ordered by what blocks what. Open board: #1–#5, #8–#11 (all OPEN), PR #6 (OPEN).
 Last updated 2026-09-19, after the #4 implementation + issues #8–#11 filed.
 
-## 0. Land the #4 working tree (blocks everything, ~30 min, no GPU)
+## 0. #4 landed, gate slice FAILED 2/3 -- CLOSED with verdict (no action)
 
-The Option C fix is implemented but **uncommitted** (`floorclean/ppo.py`,
-`floorclean/env.py`, `scripts/train.py`, `tests/test_env.py` — a second agent
-landed parallel edits in the same files, so review carefully):
-
-- [ ] `git diff` review: merged summary keys (`adv_std`, `adv_std_global`,
-      `value_mean`, `phi_mean`, `explained_variance_f`), `Transition.phi`
-      threading with the four distinct reads (`phi_pre` / `phi_next_pre_reset` /
-      selected / `mb_phi`), `delivered_kg` plumbing, cancellation + chunk-wiring
-      tests. All 17 `test_env.py` + 12 `test_physics.py` pass as of this writing.
-- [ ] Commit on a branch, open PR (or stack on PR #6 if still open).
-- [ ] CPU smoke already covered by the tiny-chunk tests; no pod yet.
-
-**Gate for any GPU spend:** committed + green suite. Nothing below needs a pod.
+Merged via PR #7; suite green (33/33). Gate slice `gate4` (800 upd / 26.2M
+steps, ~$0.35): `adv_std_global` collapsed 16x (0.634 -> 0.059), entropy
+monotone throughout, `finished_clean` 0. Only the instrumentation criterion
+passed (`EV_f` 0.166 -> 0.793 -- informative, and it diagnoses the loop:
+entropy up -> random policy -> predictable returns -> adv shrinks -> entropy
+term dominates -> entropy up; `approx_kl` fell 23x, gradient doing nothing).
+The offset made the failure visible at update 300 instead of inferred at 1500.
+Next: `ent_coef` ablation {0.003, 0.0003, 0.0} x 800 upd (~$0.55) -- earned by
+evidence; if that fails, suspect `REWARD_SCALE = 200` signal scale itself.
 
 ## 1. One shop visit settles #9, #10, #11 (no compute, highest realism/$)
 
@@ -44,15 +40,15 @@ Three photos, each closing one issue. Do them together:
 - [ ] If it lands far outside the band, tune in T1 order (`entrainment_rate` →
       `settling_velocity` → `deposit_entrainment_rate`), one knob per commit message.
 
-## 3. #4-gated short pod slice (first GPU spend since run 1)
+## 3. ent_coef ablation slices (gate failed -- this replaces the run-2 plan)
 
-- [ ] Small slice (not full 150M): watch `adv_std_global` (must stay non-collapsed),
-      `explained_variance_f` (must be informative, not ~1-by-construction),
-      entropy (must not climb monotonically), greedy-eval stills (must move).
-- [ ] Stop rule: `adv_std` collapse → stop, same as cut-and-abandon divergence
-      (`adhered` down + `deposited` up + `drained` flat → stop).
-- [ ] Only on green slice: launch run 2. Start fresh — run 1's checkpoint
-      (entropy 5.62, worse-than-init policy) carries nothing worth keeping.
+- [ ] Three x 800-update slices, `ent_coef` in {0.003 control, 0.0003, 0.0},
+      watching `adv_std_global`, entropy, `fraction_clean`. ~45 min, ~$0.55.
+- [ ] If `adv_std` stabilises and `clean` stops declining at lower `ent_coef`,
+      that is the fix. If it degrades anyway, the problem is the advantage
+      signal itself -- next suspect `REWARD_SCALE = 200` per-step scale.
+- [ ] No full run until a slice holds `adv_std` flat with non-monotone entropy.
+      Start any full run fresh (run 1's checkpoint carries nothing).
 
 ## 4. Then, in order
 
