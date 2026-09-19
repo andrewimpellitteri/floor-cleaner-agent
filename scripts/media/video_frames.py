@@ -70,15 +70,15 @@ def probe(path: pathlib.Path) -> dict:
 
 
 def _transpose_for(rotation: int) -> str:
-    """ffmpeg transpose filter for a stored display-matrix rotation.
+    """No-op: ffmpeg already applies the display matrix before user filters.
 
-    Specifying -vf drops ffmpeg's automatic display-matrix handling, so a phone
-    clip recorded in portrait comes out on its side unless we rotate it back by
-    hand. Measured against the shop clips: rotation=-90 needs transpose=2.
+    Checked empirically on ffmpeg 8.0.1 against these clips (rotation=-90):
+    `-vf scale=...` alone yields the correct portrait frame, and adding a
+    transpose on top double-rotates it. Kept as a named seam because older
+    ffmpeg builds did NOT autorotate once -vf was supplied; if frames ever come
+    out sideways again, check `ffmpeg -version` before reaching for transpose.
     """
-    r = rotation % 360
-    return {90: "transpose=1", 180: "transpose=1,transpose=1",
-            270: "transpose=2"}.get(r, "")
+    return ""
 
 
 def extract(path: pathlib.Path, outdir: pathlib.Path, fps: float,
