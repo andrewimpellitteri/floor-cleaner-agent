@@ -167,3 +167,50 @@ found and fixed against these clips:
   - the ffmpeg `xstack` montage is brittle; contact sheets are tiled with PIL.
 Frames are named by timestamp (t0007.00s.jpg) so a filename IS a time
 coordinate -- which is what makes walking speed recoverable from two frames.
+
+## Videos — what they do and do not contain
+
+Four clips, 720p30, 125 s total, extracted at 1 fps to 125 frames and triaged
+via contact sheets (twice: the first triage ran on wrongly-rotated frames and
+its output was discarded).
+
+CORRECTED TRIAGE RESULT: no tape measure and no side-on wand in ANY video
+frame. Spot-checking its best-rated "clean stripe edge with sharp wet/dry
+boundary" (082903 t0015) shows faint wet marks on clean floor, no stripe edge
+and no scale, so even the surviving categories are overcalled.
+
+What the clips actually are: handheld walking pans pointed down at the floor,
+plus some room panning. Useful for wet-pattern structure (issue #9) and for
+confirming the awnings-on-the-bar geometry -- 082903 t0003 shows dark awnings
+hanging from the bar with wet patches on the floor beneath them, which is the
+line-source picture directly. Not useful for issue #11.
+
+ISSUE #11 REMAINS BLOCKED. Nothing in this drop measures swath, standoff, tilt
+or walking speed.
+
+## What to shoot next (specific, and none of it needs judging an angle by eye)
+
+The reason the earlier instructions failed is that they asked for quantities a
+person cannot eyeball -- tilt to +-15 deg is the difference between the model's
+two regimes. These ask only for things a camera can see against a scale.
+
+1. POND DEPTH AT THE TROUGH (issue #10, the highest-value single number).
+   Stand a dry popsicle stick / screwdriver vertically in the deepest part of
+   the trough pond, hold 3 seconds, pull it out, and photograph the wet mark
+   held against the tape IN AIR. Reading a submerged blade is what went wrong
+   this time; reading a wet mark in air is easy and unambiguous.
+2. SINGLE PASS, ONE STRIPE (issue #11). Lay the 6 ft tape FLAT on the floor
+   ACROSS the direction of travel, so it spans the stripe. Make one normal
+   pass. Then photograph straight down at the tape with the wet/cut stripe
+   crossing it. The swath width is then read off the tape, not estimated.
+3. WALKING SPEED (issue #11, free). Same pass, but film it with the 6 ft tape
+   lying ALONG the direction of travel in frame. Speed comes from two frames
+   and their timestamps; no one has to time anything.
+4. WAND GEOMETRY (issue #11). One still, camera at floor level about 3 m to the
+   SIDE of the operator mid-pass, with the 6 ft tape standing vertically in
+   frame next to them. Standoff and tilt are then both measurable off the image
+   against a known vertical -- neither has to be judged by eye.
+5. FLOOR CONDITION (new question). One photo of a traffic lane and one of an
+   area that has never been a lane, from the same height, so the wear contrast
+   is directly comparable. This resolves whether the floor is still "worn
+   through" as ORIENTATION.md records.
