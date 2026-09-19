@@ -1,9 +1,9 @@
 """Running policies: to completion, for benchmarking and for rendering.
 
-Training uses five-minute windows, but the question being answered is "how long
-does the floor take", so the benchmark has to run past the training horizon
-until the floor is genuinely clean. These helpers do that for both scripted
-baselines and trained networks through one interface.
+Training episodes are full fifteen-minute jobs, but the question being answered
+is "how long does the floor take", so the benchmark has to run past the
+training horizon until the floor is genuinely clean. These helpers do that for
+both scripted baselines and trained networks through one interface.
 
 Two practical constraints shape the design:
 

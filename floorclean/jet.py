@@ -25,8 +25,8 @@ You cannot have both at once, and that tension is the whole problem. The
 optimal policy has to interleave the two -- which is exactly the argument worth
 settling with a simulation rather than in the break room.
 
-The impact patch of a 40 deg fan at a 30 cm standoff is about 22 cm x 3 cm,
-which is thinner than one 5 cm grid cell. So pressure is computed from the TRUE
+The impact patch of a 25 deg fan at a 30 cm standoff is about 13 cm x 1.5 cm,
+which is thinner than one 7 cm grid cell. So pressure is computed from the TRUE
 physical footprint area and only then rasterised onto the grid via an area-
 preserving coverage fraction. Results are therefore independent of `dx`, which
 they would not be if the footprint were simply painted onto cells.

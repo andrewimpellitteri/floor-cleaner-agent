@@ -2,8 +2,9 @@
 """Run a scripted baseline to COMPLETION and report simulated minutes to clean.
 
 This is the T1 measurement: a competent strategy swept until every cell is
-under `dirt.clean_threshold`, timed against Andrew's ~15-minute ground truth.
-Training episodes are five-minute windows; this is the whole job.
+under `dirt.clean_threshold`, timed against Andrew's ~30-minute deep-clean
+ground truth (issue #2 -- the ~15-minute figure is a routine pass, not a full
+clean). Training episodes are fifteen-minute jobs; this is the whole job.
 
     python scripts/run_to_completion.py --strategy far_to_near --seed 0
     python scripts/run_to_completion.py --strategy blast_then_sweep --record out.mp4
