@@ -23,6 +23,21 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 GPU training: `uv pip install -e ".[cuda]"`.
 
+`uv.lock` is committed, so `uv sync` reproduces the exact resolution this was
+developed and trained against. The pod resolves from the same lock.
+
+**System dependencies**, which pip cannot install for you:
+
+| tool | needed by | why |
+|---|---|---|
+| `ffmpeg` | `floorclean/render.py`, `scripts/media/` | writes the MP4 renders and extracts video frames |
+| `awscli` | `scripts/jobs/train.sh` | mirrors checkpoints and the CSV to S3 from the pod |
+
+**Credentials** are only needed to launch a RunPod run; everything local runs
+without them. Copy `.env.example` to `.env` and fill it in — `.env` is
+gitignored. `scripts/runpod_launch.py` reads the first of `--env-file`, `./.env`,
+`~/.config/floorclean/.env`, and anything already exported wins over all three.
+
 ## Usage
 
 ```bash

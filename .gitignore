@@ -28,3 +28,4 @@ checkpoints/
 
 # Shop media drops: keep the bytes out of git history
 *.zip
+!.env.example

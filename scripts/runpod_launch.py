@@ -10,8 +10,12 @@ scripts/jobs/train.sh (which runs scripts/train.py), streams checkpoints and
 the CSV to S3, and terminates itself. terminateAfter is MANDATORY -- this
 script refuses to launch without it.
 
+Credentials (see `load_secrets`): exported env vars win; otherwise the first
+.env found among --env-file, ./.env, ~/.config/floorclean/.env. Nothing is ever
+printed but variable NAMES.
+
 Usage:
-  set -a; source ~/Documents/dev/4o_clone/.env; set +a   # RUNPOD_API_KEY, S3_BUCKET, AWS keys
+  cp .env.example .env && $EDITOR .env        # once, per machine
 
   python scripts/runpod_launch.py --dry-run                # show the payload, spend nothing
   python scripts/runpod_launch.py --run-name base          # launch (default: current branch)
@@ -67,6 +71,81 @@ mutation Deploy($input: PodFindAndDeployOnDemandInput) {
 }
 """
 
+# Where credentials come from, in order. This used to be a single absolute path
+# into a SIBLING repo (~/Documents/dev/4o_clone/.env), which meant the launcher
+# worked on exactly one machine and failed with "RUNPOD_API_KEY not set" --
+# naming the symptom, not the cause -- anywhere else. That path still works if
+# it is present, but it is now the last resort rather than the only option.
+ENV_FILE_CANDIDATES = [
+    pathlib.Path(__file__).resolve().parent.parent / ".env",   # repo-local
+    pathlib.Path.home() / ".config" / "floorclean" / ".env",   # per-user
+    pathlib.Path.home() / "Documents" / "dev" / "4o_clone" / ".env",   # legacy
+]
+
+# Needed for any launch. GH_PAT and WANDB_API_KEY are genuinely optional, so
+# they are not listed: the repo is public and W&B is opt-in.
+REQUIRED_ENV = ["RUNPOD_API_KEY", "S3_BUCKET",
+                "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+
+
+def _parse_env_file(path):
+    """Minimal KEY=VALUE reader: no shell, no interpolation, no surprises."""
+    out = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        out[k.strip()] = v
+    return out
+
+
+def load_secrets(explicit=None):
+    """Populate os.environ from the first .env found, without overriding it.
+
+    Already-exported variables always win, so `set -a; . whatever.env; set +a`
+    keeps working exactly as before and CI can inject secrets with no file at
+    all. Returns the file used, or None if the environment already sufficed.
+    """
+    candidates = ([pathlib.Path(explicit).expanduser()] if explicit
+                  else ENV_FILE_CANDIDATES)
+    if explicit and not candidates[0].is_file():
+        sys.exit(f"--env-file {candidates[0]} does not exist")
+
+    used = None
+    for path in candidates:
+        if not path.is_file():
+            continue
+        loaded = []
+        for k, v in _parse_env_file(path).items():
+            if k not in os.environ:      # an exported value always wins
+                os.environ[k] = v
+                loaded.append(k)
+        used = path
+        print(f"[*] read {len(loaded)} var(s) from {path}"
+              + (f": {', '.join(sorted(loaded))}" if loaded else " (all already set)"),
+              file=sys.stderr)
+        break
+
+    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+    if missing:
+        looked = "\n".join(f"      {p}{'' if p.is_file() else '   (not found)'}"
+                            for p in candidates)
+        sys.exit(
+            f"missing credentials: {', '.join(missing)}\n"
+            f"    Looked in:\n{looked}\n"
+            f"    Fix: copy .env.example to .env at the repo root and fill it in,\n"
+            f"    or pass --env-file PATH, or export the variables yourself.")
+    return used
+
+
 # Secrets forwarded into the pod environment. GH_PAT is optional: the repo is
 # public, so the clone needs no credentials; forward it only if set (e.g. for
 # a private fork). The pod needs S3 to mirror logs/checkpoints and
@@ -118,7 +197,7 @@ BOOTSTRAP = (
 def api(method, path, payload=None, timeout=60):
     key = os.environ.get("RUNPOD_API_KEY")
     if not key:
-        sys.exit("RUNPOD_API_KEY not set (source the .env first)")
+        sys.exit("RUNPOD_API_KEY not set (see load_secrets for where it is looked for)")
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         f"{REST}{path}", data=data, method=method,
@@ -136,7 +215,7 @@ def api(method, path, payload=None, timeout=60):
 def graphql_api(query, variables, timeout=60):
     key = os.environ.get("RUNPOD_API_KEY")
     if not key:
-        sys.exit("RUNPOD_API_KEY not set (source the .env first)")
+        sys.exit("RUNPOD_API_KEY not set (see load_secrets for where it is looked for)")
     body = json.dumps({"query": query, "variables": variables}).encode()
     request = urllib.request.Request(
         GRAPHQL, data=body, method="POST",
@@ -603,7 +682,7 @@ def check_run_name_free(args):
 
 def cmd_launch(args):
     if not os.environ.get("S3_BUCKET"):
-        sys.exit("missing env: S3_BUCKET (source the .env first)")
+        sys.exit("missing env: S3_BUCKET (see load_secrets for where it is looked for)")
     args.job, job_path = resolve_job(args.job)
     check_run_name_free(args)
     overrides = parse_env_overrides(args.env)
@@ -734,11 +813,15 @@ def main():
                     help="poll until the container starts; terminate the pod "
                          "if it never does (default "
                          f"{WAIT_HEALTHY_DEFAULT:g} min; 0 disables)")
+    ap.add_argument("--env-file", default=None, metavar="PATH",
+                    help="read credentials from this .env instead of searching "
+                         "the default locations")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--logs", metavar="POD_ID")
     ap.add_argument("--kill", metavar="POD_ID")
     args = ap.parse_args()
+    load_secrets(args.env_file)
 
     if args.status:
         return cmd_status()
