@@ -51,3 +51,45 @@ prove a policy cannot do better -- an adaptive policy can vary pose per stroke
 and respond to where grit actually is, which no fixed schedule here does -- but
 the evidence for headroom is now absent rather than merely unproven, and that
 is the wrong side of the gate.
+
+
+================================================================================
+FOLLOW-UP: does NON-UNIFORM allocation beat uniform? No. (added after Andrew
+asked whether the lawnmower pattern is provably optimal -- it is not, and the
+test above had a real gap: every schedule in it allocated strokes uniformly.)
+
+Same 4 pinned floors, 35 strokes, 24-lane grid, far_to_near's pose. These are
+ORACLES: they read the TRUE grit field to choose each next lane, so they measure
+the ceiling of adaptive allocation, i.e. what a perfect policy could aspire to.
+
+  schedule                          clean
+  uniform (24 lanes)                0.301 +- 0.050
+  greedy (dirtiest lane each time)  0.344 +- 0.034
+  sweep once, then greedy           0.307 +- 0.034
+  greedy + pose tightened on worn   0.320 +- 0.046
+  --
+  best uniform (30 lanes, above)    0.347 +- 0.045
+  far_to_near                       0.333 +- 0.046
+
+An oracle with perfect knowledge of where the grit is lands at 0.344, which is
+the best uniform schedule (0.347) to within noise. Adapting the POSE to the
+yield field as well (0.320) does not help either.
+
+THE VALUE OF INFORMATION IN THIS TASK IS ABOUT ZERO. That is a stronger result
+than the spacing sweep, and it survives the objection that prompted it.
+
+WHY, mechanically. The floor is nearly homogeneous: load_mean 0.02 kg/m^2 with
+load_std 0.009. With 35 strokes and a fixed swath, total area swept is fixed no
+matter which lanes are chosen, so "put the next pass where the most grit is"
+reduces to "put it where I have not been" -- which is what uniform sweeping
+already does. Greedy does show a tighter spread (+-0.034 against +-0.050), so
+adapting buys CONSISTENCY across floors, just not a better mean.
+
+CONSEQUENCE FOR ISSUE #8. This cuts against the partially-observed variant more
+than anything else measured. The case for #8 was that the agent is handed the
+worn-lane map and must instead discover it. But if an oracle holding that map
+cannot turn it into a better score, then hiding it does not create a problem --
+it creates a harder version of a problem whose solution does not depend on the
+hidden information. Making adaptation pay would need a genuinely more
+heterogeneous floor, which is a modelling choice about Andrew's shop rather than
+a free parameter.
