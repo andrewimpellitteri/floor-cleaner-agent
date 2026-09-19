@@ -93,7 +93,11 @@ BOOTSTRAP = (
     "git checkout -q --detach FETCH_HEAD && "
     "echo \"[bootstrap] source HEAD = $(git rev-parse HEAD)\" ) && "
     "BOOTSTRAP_REPO=/tmp/repo timeout -s KILL 54000 "
-    "bash /tmp/repo/scripts/jobs/train.sh || "
+    # `--job` is forwarded as JOB and normalised to a bare `name.sh` by
+    # _normalise_job, which also proves the file exists in the checkout. This
+    # used to hardcode train.sh, so every --job other than the default silently
+    # ran training instead -- caught by --dry-run before it cost a pod.
+    "bash /tmp/repo/scripts/jobs/${JOB:-train.sh} || "
     "{ echo \"[bootstrap] FAILED; self-terminating\" ; "
     "echo eyJxdWVyeSI6Im11dGF0aW9ue3BvZFRlcm1pbmF0ZShpbnB1dDp7cG9kSWQ6XCJfX1BPRElEX19cIn0pfSJ9 "
     "| base64 -d | sed s/__PODID__/$RUNPOD_POD_ID/ > /tmp/kill.json ; "
