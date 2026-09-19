@@ -1,6 +1,6 @@
 Five-run GPU ablation: why the policy plateaus at ~0.39 clean
 =============================================================
-2026-09-19. 5x RTX-class pods, 600 updates requested, read at 130-160.
+2026-09-19. 5x RTX-class pods, 600 updates each (150M steps; 750M total).
 ent0030/ent0003/ent0000 vary ent_coef at alpha=1. alpha000/alpha050 vary
 potential_baseline_alpha at ent_coef=0.003. All other config identical.
 
@@ -83,3 +83,54 @@ PREDICTION SCORECARD (kept honestly)
     signal -- is wrong.
   Running record on mechanism predictions: 2 of 9, and both hits were derived
   from first principles rather than intuited. Every intuited one has missed.
+
+
+==========================================================================
+FINAL NUMBERS -- all five runs complete at 600 updates
+==========================================================================
+run        a   ent_coef  peak  @upd  final   drop  H_end  adv_end  finished
+ent0030   1.0     0.003  0.418  199  0.362  -13.5  5.001   0.0459         0
+ent0003   1.0    0.0003  0.423  226  0.364  -13.9  4.342   0.0465         0
+ent0000   1.0       0.0  0.432  256  0.364  -15.9  4.037   0.0444         0
+alpha000  0.0     0.003  0.430   73  0.354  -17.7  4.900   0.5331         0
+alpha050  0.5     0.003  0.441   97  0.360  -18.3  4.116   0.3040         0
+
+Every run rises to a peak then DECAYS, and all five land on the same terminal
+value: fraction_clean 0.354-0.364, a spread of 0.010. That is across a 1-nat
+range of final entropy (4.037 to 5.001) and a 12x range of final advantage
+scale (0.044 to 0.533). The knobs move the transient; they never move the
+destination.
+
+The ordering of the peaks is the mechanism, visible directly:
+  alpha=0   peaks EARLIEST (upd 73)  -- critic starts ignorant of Phi, so the
+            shaping is unabsorbed, advantages are largest, the policy improves
+            fastest and exhausts the signal soonest.
+  alpha=0.5 peaks at 97 and HIGHEST (0.441) -- half the potential is absorbed
+            analytically, so the learnable half keeps supplying gradient a bit
+            longer. Best single number in the study, and still a transient.
+  alpha=1   peaks LATEST (199-256) -- shaping pre-absorbed, nothing to exhaust,
+            so the slow drift dominates from the start.
+
+finished_clean = 0 on every update of every run. Zero completions in 750M
+steps. The finish bonus has never once been collected.
+
+HEAD-TO-HEAD AGAINST THE HAND-CODED BASELINE
+Run to completion from a fresh fully-dirty floor, 6 seeds, 30-minute cap:
+
+  policy                          fraction_clean   drained_kg   finished
+  far_to_near (hand-coded)         0.722 +- 0.070      0.902        0/6
+  learned alpha=0.5, deterministic 0.031 +- 0.015      0.000        0/6
+  learned alpha=0.5, stochastic    0.210 +- 0.038      0.257        0/6
+
+The learned policy's MEAN ACTION MOVES NO GRIT AT ALL (drained 0.000). Its
+entire apparent competence comes from exploration noise, and even then it is
+3.4x worse than far_to_near. The training-time fraction_clean of ~0.42 is not
+comparable to these: training resets start the floor at a random point through
+the job, so most of that 0.42 is the reset distribution, not the policy's work.
+That metric was flattering the policy by a wide margin.
+
+AND far_to_near ALSO FINISHES 0/6, at worst_residual 0.094 against a threshold
+of 0.002 -- 47x over, with 28% of cells still dirty. So the completion
+criterion is unreachable for the best strategy we have, not merely for the
+learned one. That is WHY the finish bonus never fires, and it is a property of
+the task definition, not of PPO.
