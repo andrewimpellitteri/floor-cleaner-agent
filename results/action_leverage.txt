@@ -1,0 +1,79 @@
+Why no amount of reward/critic tuning fixes this: single-action leverage
+========================================================================
+2026-09-19. scripts-equivalent: scratchpad/action_leverage.py
+
+MOTIVATION. EV saturated at 1.000, so EV_f was added as the honest diagnostic.
+After DIRT_COST made the objective non-empty, EV_f ALSO saturated at 1.000 by
+update 136. Two diagnostics dead the same way is a hint that the thing being
+measured is not critic quality. So measure the underlying quantity directly.
+
+METHOD. Warm a floor to mid-job (step 1500). From that ONE fixed state, take
+K=64 different first actions, then follow the SAME scripted policy for H=300
+steps (60 s). The env is deterministic given (state, action), so ALL spread in
+the resulting discounted GENUINE return is attributable to that single action.
+This is, in expectation, exactly what PPO's advantage estimates.
+
+RESULT.
+  discounted genuine return (60 s) : -111.8905
+  std across 64 first actions      :    0.006254   <- one action
+  full range                       : [-111.9065, -111.8779]  (spread 0.0285)
+  std / |mean|                     :    5.589e-05
+
+  std across 8 different FLOORS,
+  same policy, same horizon        :    3.375112
+
+  ONE ACTION / WHOLE FLOOR         :    0.0019
+
+READING. The action-attributable signal is 0.19% of the nuisance variation
+between floors -- a ~500:1 noise-to-signal ratio at the batch level, before
+any question of reward design. PPO must pick the first number out of the
+second.
+
+WHAT THIS EXPLAINS.
+  * EV and EV_f both -> 1.000. The critic is not failing; it is correctly
+    predicting the 99.8% of return set by which floor was drawn and how far
+    through the job the reset landed. The residual it cannot predict is the
+    0.19%, which is the only part that carries action information.
+  * Advantage normalisation cannot help. `adv = (adv - mean)/std` rescales a
+    noise-dominated quantity to unit variance; it amplifies the 500:1 noise
+    exactly as faithfully as it would amplify signal.
+  * Why every knob was a null. Five configurations spanning alpha 0/0.5/1 and
+    a 1000x range of ent_coef all landed at fraction_clean 0.354-0.364. After
+    DIRT_COST, three more landed at 0.34-0.44. The knobs were never the
+    binding constraint.
+
+WHAT IT DOES NOT SAY. It does not say the simulation is wrong, and it does not
+say the reward fixes were wrong -- DIRT_COST did exactly what it claimed
+(r_gen std 0.000000 -> 0.021, advantages stopped collapsing). It says the
+CONTROL PROBLEM AS FRAMED has almost no per-decision leverage: 4500 sequential
+choices, each worth 5.6e-5 of the outcome.
+
+CONSISTENT WITH THE PHYSICS. Independently measured, coverage gaps outweigh
+genuinely-uncuttable grit 3-4:1 by mass, and in one seed 98% of the leftover
+grit had simply never been walked over. The floor is cleaned by WHERE YOU WALK,
+not by what the wand does in any given 0.2 s. Both measurements say the same
+thing from opposite ends.
+
+IMPLICATION. If RL is to be worth further spend here, the action space is the
+thing to change, not the reward. A policy choosing lane spacing, sweep
+direction, segment length and when to cross to the far side would make a
+handful of decisions per episode, each worth a large fraction of the outcome --
+the exact inverse of the current 4500-decisions-at-5.6e-5 arrangement. That is
+a redesign, and it should be costed against the fact that the scripted sweep
+already answers Andrew's practical question at 0.722 clean.
+
+CONFIRMED BY THE ent_coef=0 RUN (same day, alpha=1.0 both).
+  fixed-a10   ent_coef 0.003   final entropy 6.157   clean 0.441
+  fixed-ent0  ent_coef 0.0     final entropy 4.273   clean 0.450
+A 1.9-NAT difference in entropy -- the bonus removed entirely, drift reversed,
+policy sigma held near its initialisation instead of inflating to ~0.8 -- buys
+0.009 of clean. Third independent confirmation that entropy is a passenger
+here, and a direct prediction of the leverage result: a knob cannot matter when
+the action-attributable signal is 0.19% of the batch noise.
+
+SCOREBOARD OF THE REWARD FIXES (fresh floor, training-time fraction_clean).
+  before any fix (5-run ablation, final)   0.354 - 0.364
+  after gamma + DIRT_COST + fresh eval     0.441 - 0.450
+  hand-coded far_to_near, 30 min           0.722
+The fixes are worth a real +0.08, and they removed a genuine bug. They do not
+close the gap to the scripted sweep, and the leverage number above says why.
