@@ -1,0 +1,53 @@
+# Does the macro action space have headroom above the scripted baseline?
+# Answer: no headroom is demonstrable, and the argument that there was is wrong.
+#
+# Run before spending GPU, on CPU, 4 pinned fresh floors, 15-min episodes.
+# Strokes are hand-scheduled (cycle through N lanes, alternating sides) at
+# far_to_near's own pose (standoff 0.400 m, tilt 0.550 rad), so this measures
+# the SPACE, not a policy.
+
+  lanes   spacing   clean fraction
+     12    38.2 cm  0.305 +- 0.037
+     15    30.0 cm  0.342 +- 0.043
+     18    24.7 cm  0.284 +- 0.048
+     24    18.3 cm  0.301 +- 0.050
+     30    14.5 cm  0.347 +- 0.045
+
+  far_to_near reference   0.333 +- 0.046   (same floors, same horizon)
+
+NO TREND. Over a 2.6x range of lane spacing the result is 0.28-0.35, and every
+value sits inside every other value's error bars. The best hand-built schedule
+(0.347) beats far_to_near by 0.014 against a +-0.045 spread -- not a result.
+
+A PREDICTION OF MINE THAT FAILED, recorded because it was the case for spending
+GPU. I argued: 35 strokes x 17.7 cm effective swath x 7 m = 43 m^2 of a 58.8 m^2
+bay = 74% coverage, which through the project's own regression
+f_clean = 0.596*c + 0.025 gives ~0.47 clean, well above far_to_near's 0.333 at
+~52% coverage. The 18-lane schedule's 0.284 was therefore blamed on 24.7 cm
+spacing leaving gaps against a 17.7 cm swath.
+
+Tested directly: 24 lanes at 18.3 cm, spacing matched to the swath, scores
+0.301. The predicted 0.46 does not appear. So the regression does not
+extrapolate the way I applied it -- it was fitted across ROUTING STRATEGIES
+whose coverage differed for structural reasons (chase_worst at c=0.04 versus
+full sweeps at c=0.94), and reusing it to predict the effect of re-spacing lanes
+within one strategy is not a use it supports.
+
+WHAT THIS DOES AND DOES NOT SAY
+
+It does NOT say coverage stopped mattering. chase_worst still scores 0.059
+against far_to_near's 0.333 by covering 4% of the floor, and that gap is the
+largest in the project. Coverage dominates BETWEEN strategy classes.
+
+It says that WITHIN the class "full passes wall to trough", how the passes are
+spaced is not a lever. That is consistent: 35 strokes sweep a roughly fixed
+area whatever their spacing, and spacing only trades gaps against overlap.
+
+CONSEQUENCE FOR TRAINING. The gate for spending GPU on the macro space was a
+hand-built schedule beating 0.333. The best of five is 0.347 +- 0.045, which is
+the baseline to within noise. A learned policy searching this space has no
+demonstrated headroom to find, so the GPU run was not launched. This does not
+prove a policy cannot do better -- an adaptive policy can vary pose per stroke
+and respond to where grit actually is, which no fixed schedule here does -- but
+the evidence for headroom is now absent rather than merely unproven, and that
+is the wrong side of the gate.
