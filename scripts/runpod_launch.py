@@ -530,10 +530,82 @@ def default_run_name(ref):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", ref)[:32] or "base"
 
 
+def live_pod_names():
+    """{pod_name: (pod_id, desiredStatus)} for every pod on the account."""
+    body = {"query": "query{myself{pods{id name desiredStatus}}}"}
+    req = urllib.request.Request(
+        GRAPHQL, data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {os.environ.get('RUNPOD_API_KEY', '')}",
+                 "Content-Type": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return {}
+    out = {}
+    for pod in ((data.get("data") or {}).get("myself") or {}).get("pods") or []:
+        if pod.get("name"):
+            out[pod["name"]] = (pod.get("id"), pod.get("desiredStatus"))
+    return out
+
+
+def s3_run_has_state(run_name, prefix="floorclean"):
+    """Objects already under this run's S3 prefix, as a short list (or [])."""
+    bucket = os.environ.get("S3_BUCKET")
+    if not bucket:
+        return []
+    uri = f"s3://{bucket}/{prefix}/runs/{run_name}/"
+    try:
+        out = subprocess.run(["aws", "s3", "ls", uri, "--recursive"],
+                             capture_output=True, text=True, timeout=60)
+    except Exception:
+        return []
+    if out.returncode != 0:
+        return []
+    return [ln for ln in out.stdout.splitlines() if ln.strip()][:5]
+
+
+def check_run_name_free(args):
+    """Refuse a run name that collides with a live pod or existing S3 state.
+
+    Why this exists: `--run-name` is used verbatim for the pod name, the S3
+    prefix AND the W&B run name, so relaunching after a kill silently produces
+    a SECOND W&B run with the same display name pointing at the SAME S3 prefix.
+    That happened on 2026-09-19 (two `macro-a10` runs); it was harmless only
+    because the killed pod died before writing a checkpoint. Had it got further,
+    the relaunch would have inherited or clobbered its state, and the resulting
+    curve would have been a silent splice of two different configurations --
+    the kind of thing that is very hard to notice afterwards and invalidates
+    the comparison it was launched to make.
+    """
+    name = f"fc-train-{args.run_name}"[:48]
+    pods = live_pod_names()
+    if name in pods and not args.allow_duplicate_run:
+        pid, status = pods[name]
+        sys.exit(
+            f"a pod named {name!r} already exists ({pid}, {status}).\n"
+            f"    Launching now would give two runs the same S3 prefix "
+            f"(runs/{args.run_name}/) and the same W&B name.\n"
+            f"    Kill it first:   python scripts/runpod_launch.py --kill {pid}\n"
+            f"    Or use a different --run-name, or pass --allow-duplicate-run "
+            f"if you really want both.")
+
+    existing = s3_run_has_state(args.run_name)
+    if existing and not (args.resume_run or args.allow_duplicate_run):
+        listing = "\n".join(f"      {ln}" for ln in existing)
+        sys.exit(
+            f"s3 already holds state for run {args.run_name!r}:\n{listing}\n"
+            f"    A fresh launch would overwrite the checkpoint and splice the "
+            f"CSV.\n"
+            f"    Use a different --run-name, or --resume-run to continue it "
+            f"deliberately, or --allow-duplicate-run to overwrite.")
+
+
 def cmd_launch(args):
     if not os.environ.get("S3_BUCKET"):
         sys.exit("missing env: S3_BUCKET (source the .env first)")
     args.job, job_path = resolve_job(args.job)
+    check_run_name_free(args)
     overrides = parse_env_overrides(args.env)
     check_runtime_budget(job_path, args.hours,
                          environ={**os.environ, **overrides})
@@ -647,6 +719,12 @@ def main():
                          "Ubuntu 24.04)")
     ap.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                     help="extra environment variable for the job (repeatable)")
+    ap.add_argument("--allow-duplicate-run", action="store_true",
+                    help="permit a run name that collides with a live pod or "
+                         "existing S3 state (overwrites)")
+    ap.add_argument("--resume-run", action="store_true",
+                    help="deliberately continue an existing S3 run prefix; "
+                         "pair with the job's own resume flag")
     ap.add_argument("--allow-stale-ref", action="store_true",
                     dest="allow_stale_ref",
                     help="launch even though --ref is missing from origin or "
