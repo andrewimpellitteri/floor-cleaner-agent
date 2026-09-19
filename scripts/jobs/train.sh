@@ -190,7 +190,14 @@ trap 'kill $SYNC_PID 2>/dev/null || true' EXIT
 # The chunk is memory-bandwidth-bound stencil code on one GPU: no collectives,
 # no big matmuls, so Triton-GEMM/NCCL/PGLE flags do not apply. These do:
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_MEM_FRACTION:-0.9}"
-export JAX_LOG_COMPILES=1
+# Compile logging served its bring-up purpose and now only buries the log in
+# ~1600 lines of per-primitive spam per compile (it also hid the training
+# progress lines in the S3 mirror on the first main run).
+export JAX_LOG_COMPILES=0
+# Unbuffered stdout: without this, print() block-buffers through the pipe to
+# tee and progress lines reach S3 minutes late (CSV/checkpoints flush on
+# their own, so training is unaffected -- only visibility lags).
+export PYTHONUNBUFFERED=1
 # Scan-heavy loop: overlap + fewer kernel launches. Revisit against a timed
 # baseline if the workload shape changes materially.
 export XLA_FLAGS="${XLA_FLAGS:-} --xla_gpu_enable_while_loop_double_buffering=true --xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL"
