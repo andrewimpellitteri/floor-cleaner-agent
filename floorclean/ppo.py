@@ -86,9 +86,22 @@ class PPOConfig:
     #                 randomises into predictability.
     #
     # Intermediate alpha keeps some shaping in the TD residual while removing
-    # most of the offset the critic would otherwise have to memorise. Whether
-    # any alpha is actually good is an empirical question, not a theoretical
-    # one -- both endpoints are measured failures.
+    # most of the offset the critic would otherwise have to memorise.
+    #
+    # SUPERSEDED, and the history above is kept only because it is what forced
+    # the real diagnosis. Every one of those failures was a symptom of an EMPTY
+    # OBJECTIVE, not of a bad alpha: r_gen was constant because the reward had
+    # no policy-dependent term at all, so the advantages were identically zero
+    # and no alpha could help. A five-run sweep confirmed it -- alpha 0, 0.5 and
+    # 1 and a 1000x range of ent_coef all converged to fraction_clean
+    # 0.354-0.364, a spread of 0.010.
+    #
+    # env.DIRT_COST fixes the cause: r_gen now varies (std 0.021, 2928 unique
+    # values over 3000 steps). With a genuine signal present, alpha = 1 is once
+    # again the PRINCIPLED setting rather than a measured failure -- it cancels
+    # the policy-invariant shaping out of the TD residual exactly, leaving
+    # delta = r_gen + gamma*f' - f over a genuine, varying r_gen. The critic
+    # then learns the real value function instead of memorising -SCALE*Phi.
     potential_baseline_alpha: float = 1.0
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
