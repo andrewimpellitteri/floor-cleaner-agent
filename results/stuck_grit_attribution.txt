@@ -1,0 +1,24 @@
+# Stuck-grit attribution (2026-09-19) -- follows phase_breakdown's 0.088 kg
+# far_to_near, 60 min, seeds 0-1. Baseline peak pressure at 0.40m/0.55rad:
+# P_peak = 10559 Pa. "Stuck" = bound > threshold/2. "Visited" = coverage>0.01 ever.
+
+seed 0: stuck 746 cells (6.2%), 0.062 kg
+  yield at stuck: median 2051 Pa (floor median 2730), max 4945 Pa
+  above peak pressure: 0% (0.000 kg) -- pressure binds nothing here
+  never visited: 98% (0.061 kg) -- nearly all of it is coverage gaps
+seed 1: stuck 1357 cells (11.3%), 0.108 kg
+  yield at stuck: median 6456 Pa (floor median 3281), max 12252 Pa
+  above peak pressure: 11% (0.017 kg) -- a real uncuttable tail past ~10.6 kPa
+  never visited: 53% (0.055 kg) -- coverage still dominates 3:1 by mass
+
+Reading: the "almost certainly the worn lanes" call is at most ~1/4 right.
+Seed 0's stuck grit is EASIER than average and simply never walked over --
+6.1% of the floor unvisited ~= expB's 6.5% uncovered (lane spacing 0.18 m vs
+actual swath). Seed 1 has both: a genuine >P tail in the hottest lanes plus a
+larger coverage gap. By mass, coverage dominates ~3-4:1.
+
+T1 levers, in order: (1) lane spacing vs measured swath at the working
+standoff (stripes between passes -- invisible in aggregate mass, glaring in a
+render); (2) closer/lower blast for the >10.6 kPa lane centers (or dwell --
+near-threshold G cuts slowly). Neither knob in T1's prescribed order
+(entrainment_rate, settling_velocity) touches either one.
