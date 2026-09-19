@@ -1,0 +1,12 @@
+=== A1: mobility ladder, uniform source, 8 seeds, spin 600s ===
+                   gpm  mobile / mean_h(mm) / med_h(mm) / P(h>2mm) / gini
+                 0 gpm  mobile=0.000+-0.000  mean_h=0.266+-0.090  med_h=0.200+-0.000  p2mm=0.014+-0.015  gini=0.276+-0.184
+                        (188s)
+                 4 gpm  mobile=0.107+-0.016  mean_h=0.504+-0.115  med_h=0.209+-0.010  p2mm=0.041+-0.021  gini=0.503+-0.090
+                        (189s)
+                 8 gpm  mobile=0.200+-0.032  mean_h=0.680+-0.126  med_h=0.289+-0.044  p2mm=0.068+-0.025  gini=0.542+-0.067
+                        (216s)
+                20 gpm  mobile=0.453+-0.044  mean_h=1.101+-0.151  med_h=0.542+-0.111  p2mm=0.151+-0.028  gini=0.535+-0.051
+                        (192s)
+                45 gpm  mobile=0.713+-0.053  mean_h=1.748+-0.192  med_h=0.974+-0.231  p2mm=0.270+-0.042  gini=0.504+-0.042
+                        (170s)
