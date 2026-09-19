@@ -99,6 +99,11 @@ def run_episode(
     `fresh=True` starts a uniformly dirty floor (`env.fresh_state`) -- required
     for benchmark/completion times. The default starts at a random point
     through the job, matching training windows.
+
+    The episode STOPS at termination or truncation: the state is frozen and the
+    traces flatline from there. So `max_seconds` past `sim.episode_seconds` buys
+    nothing -- raise `SimConfig.max_steps` if a longer benchmark is wanted, and
+    accept that this changes the training MDP.
     """
     cfg = env.cfg
     total_steps = int(max_seconds / cfg.sim.control_dt)
@@ -114,11 +119,22 @@ def run_episode(
     far_side_at_reset = float(_far_side_mass(env, state, start_side))
 
     def one_step(cs, _):
-        c, s = cs
+        c, s, done = cs
         c, action = policy.act(env, s, c)
-        s, _obs, reward, _term, _trunc, info = env.step(s, action)
-        return (c, s), (info["remaining_kg"], info["fraction_clean"],
-                        info["worst_residual"], info["water_m3"])
+        ns, _obs, reward, term, trunc, info = env.step(s, action)
+        # Freeze at the episode boundary instead of simulating past it. This
+        # loop used to discard `term`/`trunc` and keep stepping for
+        # `max_seconds` regardless, and with a 1800 s eval against a 900 s
+        # episode that ran the second half of every eval with
+        # step/max_steps > 1 -- a value the observation (env.py:436) never
+        # takes in training. The eval was scoring extrapolation, and doing it
+        # asymmetrically: the scripted baselines read no observation at all, so
+        # only the LEARNED policy paid for it.
+        live = ~done
+        ns = jax.tree.map(lambda a, b: jnp.where(live, a, b), ns, s)
+        return (c, ns, done | term | trunc), (
+            info["remaining_kg"], info["fraction_clean"],
+            info["worst_residual"], info["water_m3"])
 
     @jax.jit
     def chunk(cs):
@@ -127,7 +143,7 @@ def run_episode(
 
     states, remaining, cleanfrac = [state], [], []
     worst_trace, water_trace = [], []
-    cs = (carry, state)
+    cs = (carry, state, jnp.bool_(False))
     for _ in range(n_chunks):
         cs, (rem, cf, worst, water) = chunk(cs)
         states.append(cs[1])

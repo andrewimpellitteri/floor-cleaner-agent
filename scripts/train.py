@@ -59,13 +59,32 @@ class TrainConfig:
     # way and stays the primary record.
     wandb_project: str = "floorclean"
     wandb_every_chunks: int = 5  # greedy-eval stills cadence (0 = no renders)
-    # Simulated seconds per eval rollout. This was 150 s (2.5 min), which is
-    # far too short to say anything about a job that takes 30+ minutes -- no
-    # policy can finish in 2.5 min, so `eval/finished` was structurally 0 and
-    # `eval/seconds_to_clean` never became finite. 1800 s matches the 30-minute
-    # benchmark that every scripted baseline is scored against, so the eval and
-    # the benchmark finally measure the same thing.
-    eval_seconds: float = 1800.0
+    # Simulated seconds per eval rollout. This was 150 s (2.5 min), far too
+    # short to say anything about a job that takes 30+ minutes -- no policy can
+    # finish in 2.5 min, so `eval/finished` was structurally 0 and
+    # `eval/seconds_to_clean` never became finite.
+    #
+    # It was then 1800 s, to match the 30-minute scripted benchmark. That was
+    # wrong in the other direction: an episode truncates at
+    # sim.episode_seconds = 900 s, and the observation carries
+    # step/max_steps (env.py:436), so minutes 15-30 fed the policy a feature
+    # value of up to 2.0 that training never produced. The scripted baselines
+    # read no observation, so the 30-minute comparison was biased against the
+    # learned policy specifically. 0 means "one full training episode", which is
+    # the only horizon where both sides are in distribution; `run_episode` now
+    # also freezes at truncation so a larger number cannot silently reintroduce
+    # the overrun. The 30-minute scripted references must be re-measured at this
+    # horizon to stay comparable -- see results/.
+    eval_seconds: float = 0.0
+
+    # Pinned eval floors. This was PRNGKey(10_000 + eval_idx), a DIFFERENT floor
+    # at every eval, while the comment at the call site claimed a fixed floor.
+    # BEST_UPDATE was therefore ranking updates partly by floor lottery, and the
+    # lottery is not small: far_to_near's own seed-to-seed spread is +-0.070
+    # clean fraction (results/shaping_gradient_ablation.txt), wider than most of
+    # the differences being selected between. Four floors, fixed for the life of
+    # the run, scored on the mean.
+    eval_floors: int = 4
 
     # Train over STROKES rather than 0.2 s wrist commands. See
     # results/action_leverage.txt: the low-level action space gives each
@@ -240,12 +259,24 @@ def main():
             item=payload_template(runner, jnp.asarray(update))
         ), force=True)
 
-    def eval_key(res):
-        # Finished runs sort by time-to-clean; unfinished by remaining grit.
-        # Tuple comparison does the right thing across the two cases.
-        if math.isfinite(res.seconds_to_clean):
-            return (0, res.seconds_to_clean)
-        return (1, res.final_remaining_kg)
+    def eval_key(results):
+        """Model-selection score over the pinned eval floors.
+
+        Ranks on the MEAN across floors, not on one floor: with a single floor
+        this was comparing a lottery draw (see TrainConfig.eval_floors). Runs
+        that clean every floor sort ahead of runs that clean some, which sort
+        ahead of runs that clean none; within a tier, by mean time-to-clean or
+        mean grit left. Tuple comparison does the right thing across all three.
+        """
+        times = [r.seconds_to_clean for r in results]
+        n_finished = sum(1 for t in times if math.isfinite(t))
+        mean_remaining = sum(float(r.final_remaining_kg) for r in results) / len(results)
+        if n_finished == len(results):
+            return (0, sum(times) / len(times))
+        if n_finished:
+            # More floors finished is better, hence the negation.
+            return (1, -n_finished, mean_remaining)
+        return (2, mean_remaining)
 
     updates_total = ppo.num_updates
     print(f"{ppo.num_envs} envs x {ppo.num_steps} steps = {ppo.batch_size} per update, "
@@ -260,14 +291,21 @@ def main():
     last_states = None
     eval_idx = 0
     # Best-eval tracking survives resume via the file (update + score tuple),
-    # so a restarted run never "forgets" an early winner.
+    # so a restarted run never "forgets" an early winner. The leading "v2" is
+    # load-bearing: eval_key used to return a 2-tuple scored on ONE floor and
+    # now returns a 2- or 3-tuple scored on the mean of several, so a v1 file
+    # would be compared against incommensurable numbers. An unrecognised or
+    # missing tag means "no previous best", which costs one eval, not a wrong
+    # model choice.
     best_key = None
     best_update = None
     if tcfg.resume and best_update_file.is_file():
         try:
             parts = best_update_file.read_text().split()
-            best_update = int(parts[0])
-            best_key = (int(parts[1]), float(parts[2]))
+            if parts[0] != "v2":
+                raise ValueError(f"unrecognised BEST_UPDATE format: {parts[0]!r}")
+            best_update = int(parts[1])
+            best_key = (int(parts[2]), *(float(x) for x in parts[3:]))
         except (ValueError, IndexError):
             best_key, best_update = None, None
     try:
@@ -333,28 +371,50 @@ def main():
                     # the metric was reporting the reset lottery, not the
                     # policy. The scripted baselines are all benchmarked fresh,
                     # so this is also what makes the numbers comparable.
-                    res = run_episode(env, policy,
-                                      jax.random.PRNGKey(10_000 + eval_idx),
-                                      max_seconds=tcfg.eval_seconds,
-                                      record_every=250,
-                                      fresh=True)
+                    # 0 means "one full training episode" -- the only horizon
+                    # where the learned policy and the scripted baselines are
+                    # both in distribution. See TrainConfig.eval_seconds.
+                    eval_seconds = (tcfg.eval_seconds
+                                    or env.cfg.sim.episode_seconds)
+                    results = [
+                        run_episode(env, policy,
+                                    jax.random.PRNGKey(10_000 + k),
+                                    max_seconds=eval_seconds,
+                                    record_every=250,
+                                    fresh=True)
+                        for k in range(tcfg.eval_floors)
+                    ]
+                    # Stills always come from floor 0, so the image strip shows
+                    # the policy changing rather than the floor changing.
+                    res = results[0]
                     last_states = res.states
                     # Scalar eval metrics: the model-selection instrument.
-                    # seconds_to_clean is inf when unfinished -- log it only
-                    # when finite so the curve stays plottable; `finished` and
-                    # remaining always are.
+                    # Averaged over the pinned floors, because a single floor's
+                    # score is dominated by which floor it is. The spread is
+                    # logged too: if it stays comparable to the between-update
+                    # differences, model selection is still mostly noise and the
+                    # floor count needs raising.
+                    remaining_kg = [float(r.final_remaining_kg) for r in results]
+                    finished = [math.isfinite(r.seconds_to_clean) for r in results]
                     eval_metrics = {
-                        "eval/finished": float(math.isfinite(res.seconds_to_clean)),
-                        "eval/remaining_kg": float(res.final_remaining_kg),
+                        "eval/finished": sum(finished) / len(finished),
+                        "eval/remaining_kg": sum(remaining_kg) / len(remaining_kg),
+                        "eval/remaining_kg_spread": max(remaining_kg) - min(remaining_kg),
                     }
-                    if math.isfinite(res.seconds_to_clean):
-                        eval_metrics["eval/seconds_to_clean"] = float(res.seconds_to_clean)
+                    # seconds_to_clean is inf when unfinished. Average over the
+                    # floors that did finish, and only log it when some did, so
+                    # the curve stays plottable.
+                    times = [r.seconds_to_clean for r in results
+                             if math.isfinite(r.seconds_to_clean)]
+                    if times:
+                        eval_metrics["eval/seconds_to_clean"] = sum(times) / len(times)
                     wlog.log_update(eval_metrics, step=update)
-                    key = eval_key(res)
+                    key = eval_key(results)
                     if best_key is None or key < best_key:
                         best_key, best_update = key, update
                         best_update_file.write_text(
-                            f"{best_update} {key[0]} {key[1]:.6g}")
+                            "v2 " + " ".join([str(best_update), str(key[0])]
+                                             + [f"{x:.6g}" for x in key[1:]]))
                     n_states = len(res.states)
                     for name, frac in (("start", 0.0), ("mid", 0.5), ("end", 0.999)):
                         still = (media_dir /
