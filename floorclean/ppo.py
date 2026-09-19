@@ -142,6 +142,16 @@ def init_runner(env: CleaningEnv, cfg: PPOConfig, rng: jax.Array) -> RunnerState
 
 def make_chunk(env: CleaningEnv, cfg: PPOConfig):
     """Build the jitted function that runs `cfg.updates_per_chunk` PPO updates."""
+    # The Wiewiora offset V = f - REWARD_SCALE*Phi cancels the shaping term out
+    # of the TD residual EXACTLY -- but only when the env shapes with the same
+    # discount the optimiser uses. `train.py` checks this too; repeated here
+    # because tests and scripts call make_chunk directly and bypass that path,
+    # and a mismatch is silent: advantages simply stop being drizzle-free.
+    if abs(env.discount - cfg.gamma) > 1e-12:
+        raise ValueError(
+            f"env.discount {env.discount} != cfg.gamma {cfg.gamma}; the shaping "
+            f"term would not cancel in the TD residual (issue #4)")
+
     network = ActorCritic(action_dim=env.action_dim)
     env_reset = jax.vmap(env.reset)
     env_step = jax.vmap(env.step)
@@ -324,6 +334,14 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
         runner = runner._replace(train_state=train_state, rng=rng)
 
         pg, v_loss, ent, approx_kl, clip_frac, adv_std = aux
+
+        # What the network itself has to learn, once the analytic offset is
+        # taken out: f = V + SCALE*Phi. `explained_variance` below is now
+        # dominated by that offset and reads ~1 by construction, so it can no
+        # longer tell a working critic from a drowned one. EV_f is the one that
+        # can -- it is EV measured against the residual the network predicts.
+        traj_f = traj.value + REWARD_SCALE * traj.phi
+        targets_f = targets + REWARD_SCALE * traj.phi
         summary = {
             "reward_mean": metrics["reward"].mean(),
             "episodes": metrics["done"].sum(),
@@ -341,13 +359,13 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             "suspended_kg": metrics["suspended_kg"].mean(),
             "policy_loss": pg.mean(),
             "value_loss": v_loss.mean(),
-            # 1 = critic predicts returns perfectly; <=0 = worse than a
-            # constant. The offset -REWARD_SCALE*Phi (~+540 dirty -> 0 clean,
-            # measured 2026-09-19) is now analytic (Wiewiora 2003): the network
-            # learns only the residual f, so EV is on the full V and stays
-            # meaningful. EV pinned near 1 with a collapsed adv_std means the
-            # critic memorised the predictable drizzle and the advantage is
-            # numerical residue -- the issue #4 failure, not a healthy critic.
+            # EV against the FULL value, which is now mostly the analytic
+            # offset -REWARD_SCALE*Phi (~+540 on a dirty floor, measured
+            # 2026-09-19). Since that term is exact by construction, this reads
+            # ~1 from the first update and is NO LONGER a measure of critic
+            # learning -- do not read it as one. Kept only for continuity with
+            # run 1, where it was the signal that something was wrong.
+            # Use `explained_variance_f` and `adv_std_global` instead.
             "explained_variance": (
                 1.0 - jnp.var(targets - traj.value)
                 / jnp.maximum(jnp.var(targets), 1e-8)
@@ -357,6 +375,20 @@ def make_chunk(env: CleaningEnv, cfg: PPOConfig):
             # collapsing adv_std means the policy gradient keeps full magnitude
             # while becoming directionless -- invisible in reward_mean/EV.
             "adv_std": adv_std.mean(),
+            # The exact pre-shuffle figure, not an average of minibatch stds.
+            # This is the number to threshold on: it is the raw scale of the
+            # learning signal before normalisation rescales it to 1.
+            "adv_std_global": jnp.std(advantages),
+            # Offset wiring check, cheap and worth having in every run: with a
+            # zeroed value head these must satisfy value_mean == -SCALE*phi_mean
+            # exactly. A drift between them means the offset has come unstuck
+            # from the potential it is supposed to cancel.
+            "value_mean": traj.value.mean(),
+            "phi_mean": traj.phi.mean(),
+            # EV against the residual. THIS is the critic diagnostic now.
+            "explained_variance_f": (
+                1.0 - jnp.var(targets_f - traj_f) / jnp.maximum(jnp.var(targets_f), 1e-8)
+            ),
             "entropy": ent.mean(),
             "approx_kl": approx_kl.mean(),
             "clip_fraction": clip_frac.mean(),

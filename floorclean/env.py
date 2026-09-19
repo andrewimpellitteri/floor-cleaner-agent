@@ -39,12 +39,16 @@ systematic sweep. What separates techniques is the fraction of the floor still
 above the cleanliness threshold -- a saturating term that pays only for getting
 cells CLEAN, never for skimming the heaviest patches. See `_potential`.
 
-BEWARE OF RANKING POLICIES BY TOTAL RETURN. Shaping contributes (gamma-1)*Phi
-every step, which for a dirty floor (Phi < 0) is a positive drift far larger
-than genuine progress. PPO's advantage estimator subtracts it as a baseline so
-it does not harm training, but it swamps undiscounted return. Compare policies
-on the physical metrics -- fraction of cells clean, time to finish, grit
-delivered -- not on summed reward.
+BEWARE OF RANKING POLICIES BY TOTAL RETURN. Shaping contributes
+REWARD_SCALE*(gamma-1)*Phi every step (+0.54 on a fresh floor at Phi~-2.72,
+measured 2026-09-19), which for a dirty floor (Phi < 0) is a positive drift far
+larger than genuine progress (~0.12/step averaged over a 15-min job). The
+critic learns it as a predictable offset (-REWARD_SCALE*Phi, Wiewiora 2003),
+so it does not bias gradients once learned -- Ng's optimum guarantee holds --
+but it swamps undiscounted return, and while the critic is learning it the
+signal-to-noise collapses (issue #4: EV->1 with adv_std->0 means the advantage
+is drizzle residue, not progress). Compare policies on the physical metrics --
+fraction of cells clean, time to finish, grit delivered -- not on summed reward.
 
 TIME LIMITS ARE TRUNCATION, NOT TERMINATION. They are reported separately so
 the value function bootstraps through the cut-off. Conflating the two (which the
