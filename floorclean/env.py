@@ -39,12 +39,16 @@ systematic sweep. What separates techniques is the fraction of the floor still
 above the cleanliness threshold -- a saturating term that pays only for getting
 cells CLEAN, never for skimming the heaviest patches. See `_potential`.
 
-BEWARE OF RANKING POLICIES BY TOTAL RETURN. Shaping contributes (gamma-1)*Phi
-every step, which for a dirty floor (Phi < 0) is a positive drift far larger
-than genuine progress. PPO's advantage estimator subtracts it as a baseline so
-it does not harm training, but it swamps undiscounted return. Compare policies
-on the physical metrics -- fraction of cells clean, time to finish, grit
-delivered -- not on summed reward.
+BEWARE OF RANKING POLICIES BY TOTAL RETURN. Shaping contributes
+REWARD_SCALE*(gamma-1)*Phi every step (+0.54 on a fresh floor at Phi~-2.72,
+measured 2026-09-19), which for a dirty floor (Phi < 0) is a positive drift far
+larger than genuine progress (~0.12/step averaged over a 15-min job). The
+critic learns it as a predictable offset (-REWARD_SCALE*Phi, Wiewiora 2003),
+so it does not bias gradients once learned -- Ng's optimum guarantee holds --
+but it swamps undiscounted return, and while the critic is learning it the
+signal-to-noise collapses (issue #4: EV->1 with adv_std->0 means the advantage
+is drizzle residue, not progress). Compare policies on the physical metrics --
+fraction of cells clean, time to finish, grit delivered -- not on summed reward.
 
 TIME LIMITS ARE TRUNCATION, NOT TERMINATION. They are reported separately so
 the value function bootstraps through the cut-off. Conflating the two (which the
@@ -61,7 +65,13 @@ import jax
 import jax.numpy as jnp
 
 from .config import Config
-from .geometry import build_floor, episode_elevation, initial_dirt, initial_water
+from .geometry import (
+    ambient_source,
+    build_floor,
+    episode_elevation,
+    initial_dirt,
+    initial_water,
+)
 from .jet import jet_impact, jet_peak_pressure
 from .physics import FieldState, initial_fields, physics_substep, residual_map
 
@@ -146,8 +156,22 @@ class CleaningEnv:
         self.discount = discount
         self.floor = build_floor(self.cfg)
 
+        # Where the ambient rinse lands (issue #1). Built once: it depends only
+        # on config and the base floor, never on episode state.
+        self.ambient = ambient_source(self.cfg, self.floor)
+
         # Distance from each cell to the trough: the transport cost map.
         self.dist_to_trough = jnp.abs(self.floor.y - self.cfg.floor.trough_y)
+
+        # THE FLOOR, as distinct from the drain channel running through it.
+        # Cleanliness is a property of the floor: grit that has reached the
+        # trough has left the floor, which is the whole job. This never mattered
+        # while the trough was a perfect sink and always empty, but it now
+        # retains a puddle (issue #3), so grit can sit in it -- and counting
+        # those cells would make `done_clean` unreachable and would have the
+        # shaping term penalise the agent for delivering.
+        self.floor_mask = (self.floor.trough < 0.5).astype(jnp.float32)
+        self.n_floor = jnp.maximum(jnp.sum(self.floor_mask), 1.0)
 
         fc = self.cfg.floor
         assert fc.nx % self.obs_cfg.pool == 0 and fc.ny % self.obs_cfg.pool == 0, (
@@ -203,15 +227,17 @@ class CleaningEnv:
             + COST_DEPOSITED * fields.deposited
             + COST_SUSPENDED * fields.suspended
         )
-        work = weighted * (1.0 + ALPHA_DISTANCE * self.dist_to_trough)
+        # Masked to the floor: grit in the trough is delivered, not outstanding.
+        work = weighted * (1.0 + ALPHA_DISTANCE * self.dist_to_trough) * self.floor_mask
         transport = jnp.sum(work) * self.cfg.floor.cell_area / jnp.maximum(
             initial_mass, 1e-6
         )
 
         residual = fields.bound + fields.deposited + fields.suspended
-        thoroughness = jnp.mean(
+        thoroughness = jnp.sum(
             jnp.clip(residual / self.cfg.dirt.clean_threshold, 0.0, 1.0)
-        )
+            * self.floor_mask
+        ) / self.n_floor
 
         return -(WEIGHT_TRANSPORT * transport + WEIGHT_THOROUGHNESS * thoroughness)
 
@@ -423,13 +449,17 @@ class CleaningEnv:
 
         floor = self.floor._replace(z=state.z)
 
-        # Ambient rinse water from the fabric washing going on in the same bay,
-        # spread evenly. Tiny per unit area, but it is what keeps a film on the
-        # slab between passes, and transport length scales with film depth --
-        # see FloorConfig.ambient_inflow_gpm, now the model's dominant
-        # uncertainty.
-        ambient = cfg.floor.ambient_inflow / (cfg.floor.length_x * cfg.floor.length_y)
-        water_source = impact.water_source + ambient
+        # Ambient rinse water reaching the floor while it is worked. It is what
+        # keeps a film on the slab between passes, and transport length scales
+        # with film depth -- see FloorConfig.ambient_inflow_gpm, still the
+        # model's dominant uncertainty in MAGNITUDE.
+        #
+        # Its SHAPE is no longer a guess: this used to divide the total by the
+        # section area, i.e. a uniform rain, which is the one thing the real bay
+        # never produces (issue #1). `self.ambient` is now built from
+        # `FloorConfig.ambient_layout` and integrates to the same total for
+        # every layout, so geometry and amount are independent knobs.
+        water_source = impact.water_source + self.ambient
 
         def substep(fields, _):
             return physics_substep(
@@ -459,7 +489,8 @@ class CleaningEnv:
 
         # -- reward --------------------------------------------------------
         residual = residual_map(fields)
-        worst = jnp.max(residual)
+        # Judged on the floor, not on the drain channel -- see `floor_mask`.
+        worst = jnp.max(residual * self.floor_mask)
         done_clean = worst < cfg.dirt.clean_threshold
 
         # Strict potential-based shaping F = gamma*Phi(s') - Phi(s) (Ng et al.
@@ -472,13 +503,22 @@ class CleaningEnv:
         truncated = new_state.step >= cfg.sim.max_steps
         terminated = done_clean
 
-        remaining = jnp.sum(residual) * cfg.floor.cell_area
+        remaining = jnp.sum(residual * self.floor_mask) * cfg.floor.cell_area
+        # In the trough but not yet down the drain: the pond's sediment load.
+        # `drained_kg` is what LEFT; `delivered_kg` is what reached the trough.
+        # They were the same number while the trough was a perfect sink.
+        in_trough = jnp.sum(residual * (1.0 - self.floor_mask)) * cfg.floor.cell_area
         info = {
             "remaining_kg": remaining,
             "drained_kg": fields.drained,
             "fraction_removed": 1.0 - remaining / jnp.maximum(state.initial_mass, 1e-6),
             "worst_residual": worst,
-            "fraction_clean": jnp.mean(residual < cfg.dirt.clean_threshold),
+            "fraction_clean": jnp.sum(
+                (residual < cfg.dirt.clean_threshold) * self.floor_mask
+            ) / self.n_floor,
+            "delivered_kg": fields.drained + in_trough,
+            "trough_grit_kg": in_trough,
+            "pond_m3": jnp.sum(fields.h * (1.0 - self.floor_mask)) * cfg.floor.cell_area,
             "standoff": standoff,
             "tilt": tilt,
             "pressure": impact.p_normal,

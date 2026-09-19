@@ -51,11 +51,62 @@ person, not crazy dirty**. The simulated section is 4.2 m × 14 m = 59 m².
 - Do **not** tune by changing the reward. The reward is a measurement
   instrument here, not a knob.
 
-**Done when:** a competent baseline finishes the section in 12–20 simulated
-minutes, and `scripts/calibrate.py` still reports a physically sensible
-single-pass table.
+**Done when:** a competent baseline gets **every cell** under
+`dirt.clean_threshold` in **25–35 simulated minutes**, and `scripts/calibrate.py`
+still reports a physically sensible single-pass table. Report `time_to_90%`
+alongside `time_to_100%` — they answer different questions and the tail between
+them is where methods differ (T4).
 
-#### Update — cutting is solved, TRANSPORT is the bottleneck
+> **The band was 12–20 min and that was the wrong comparison** (issue #2). The
+> completion test is every cell under threshold, which is a *deep clean*
+> standard; the ~15-minute ground truth is a *routine* pass — "the floor looks
+> good". Andrew's deep-clean figure is **~30 minutes**, one person, so that is
+> what an every-cell criterion must be scored against. Every "the model cannot
+> finish" verdict recorded below was measured against the old band.
+>
+> Still open: whether the 30 minutes describes a normally dirty floor done
+> thoroughly, or a genuinely filthy one. If the latter, the 20 g/m² loading is
+> too light for the time it is being asked to match, and the loading — not the
+> band — is what needs to move.
+
+> ## ⚠ The T1 findings below are STALE — read this first (issue #5)
+>
+> Every diagnosis in the next four sections was measured at a dirt loading
+> **5–8× the current one**, before the 20 g/m² correction recorded in
+> `config.py` above `max_steps`. They are kept because the *mechanism* tables
+> (impingement vs tilt, excess stress in the worn lanes, delivery vs film depth)
+> are still instructive. **Their verdicts are not.**
+>
+> | section | grit on the floor at t=0 |
+> |---|---|
+> | "cutting is solved, TRANSPORT is the bottleneck" | ~2.90 kg |
+> | "Findings so far" | **8.90 kg** |
+> | "third probe" | 5.38 kg |
+> | **current config** | **1.13 kg** |
+>
+> Re-measured on current `main` (4 seeds, 30-min cap, `far_to_near`,
+> `scripts/probes/coverage_vs_routing.py`):
+>
+> | claim below | measured now (8 / 20 gpm) |
+> |---|---|
+> | "adhered grit barely moves: 7.24 → 7.09" | **94% of it is cut** (1.06 of 1.13 kg) |
+> | "most of it sits on the floor as loose slurry" | delivered fraction **0.83 / 0.92** |
+> | "1.54 kg left lying loose" | stranded **0.18 / 0.08 kg** |
+>
+> So **neither** standing diagnosis holds at the current loading: transport
+> binds for no strategy (delivered fraction is 0.70–0.92 for *all* of them), and
+> cutting is 94% done. What actually remains is a **long tail of individual
+> cells** — 94% cut and 78–87% delivered still leaves only 68–82% of *cells*
+> under threshold, because `clean` is judged per cell. That is the T4 regime
+> ("time to 90% vs 100% — the long tail is where methods differ"), and it is a
+> different problem from either verdict below.
+>
+> **Consequence for the tuning order above:** `entrainment_rate` (cutting rate)
+> and `settling_velocity` (transport length) are not what is binding now. Do not
+> re-tune either on the strength of these entries. Re-measure the phase
+> breakdown at 1.13 kg first.
+
+#### Update — cutting is solved, TRANSPORT is the bottleneck `STALE — ~2.90 kg loading`
 
 After fixing the subgrid entrainment gate, the compromise wand angle, the
 `BlastThenSweep` state machine and the side-switching rule, `far_to_near` over
@@ -91,7 +142,7 @@ Next steps, in order:
    first band, so it never completes its outward progression. Its side-switch
    needs to wait until all bands are done, not all lanes in one band.
 
-#### Findings so far (2026-09-18) — read before touching any constant
+#### Findings so far (2026-09-18) `STALE — 8.90 kg loading` — mechanism only
 
 Transport is **fixed**; cutting is now the bottleneck, and the cause is a real
 physical trade-off rather than a bug. Breakdown by phase over 15 simulated
@@ -138,7 +189,7 @@ What this actually means:
    optimum standoff is very likely not "as close as possible", which is worth
    the study on its own.
 
-#### 2026-09-18, second probe — superseded (kept for the mechanism table)
+#### 2026-09-18, second probe — superseded `STALE loading` (kept for the mechanism table)
 First 40-min `far_to_near` run, before the side-switch fix — numbers below
 are stale, mechanism stands. Effective excess G = P − Y − Y·ln(P/Y) (kPa):
 
@@ -160,7 +211,7 @@ Related: push delivery over 3 m is 10% dry / 40% on a 2.5 mm working film /
 69% at 6 mm — Andrew's "depends on standing water" reproduced exactly, so
 transport needs no knob; the sim starting wet is load-bearing, keep it.
 
-#### 2026-09-18, third probe (current code: fixed sides, load 0.10)
+#### 2026-09-18, third probe `STALE — 5.38 kg loading`
 Same command, seed 0: **still NOT CLEAN after 40 min** — worst 0.48 (24×
 threshold), 43.6% cells clean, 5.38 → 2.94 kg on floor, 2.44 drained, mass
 closure +0.000 kg. The ping-pong is gone and most adhered grit cuts, but the

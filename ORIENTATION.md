@@ -32,7 +32,31 @@ comparison a skeptic cannot dismiss.
   There are also **random flat spots that trap standing water**. Push distance
   **depends on standing water** — Andrew confirmed this directly, and the model
   reproduces it because transport length is `u*h/v_settle`.
-- **Ground truth: ~15 minutes**, one person, floor not unusually dirty.
+- **Ground truth: two different numbers for two different jobs.**
+  **~15 minutes** for a routine pass, one person, floor not unusually dirty —
+  "the floor looks good". **~30 minutes** for a *full deep clean*, one person
+  (Andrew, 2026-09-18: *"for a full deep good clean with one person probably
+  closer to 30"*).
+  Which one applies depends on the criterion being scored. The simulator's
+  completion test is **every cell** under `dirt.clean_threshold`, which is a
+  deep-clean standard — so it should be compared against the **30-minute**
+  figure, not the 15. Scoring a deep-clean criterion against a routine-clean
+  time is what T1 did for months. See issue #2.
+  **Still open:** whether that 30 minutes is a normally dirty floor done
+  thoroughly (in which case the model is close) or a genuinely filthy one (in
+  which case the 20 g/m² loading is too light for the time it is being asked to
+  match).
+- **Water comes from point sources, and water alone does not clean.** Andrew:
+  *"even if you run continuous water through the faucets without power washing
+  it doesn't really clean it from a point source."* There are **two taps at the
+  midpoints of the room** and **four power washers, one in each corner** (so the
+  bay is equipped for up to four simultaneous operators). The floor is washed
+  **while still wet**, right after the awnings come up and while they drain on
+  the bar — a line source. You cannot flood the bay from a tap, so raising the
+  ambient flow is not an available intervention. See issue #1.
+- **The trough ponds.** It does not drain freely: *"trough has a small pond near
+  base due to warping and wear of room and painting and fiberglass."* See
+  issue #3.
 - **Known failure mode:** *"the dirt gets pushed without an opposing force"* —
   slurry driven past the trough and up the far slope. This is why the **full**
   bay is modelled, not half of it: cutting the domain at the trough would put a
@@ -104,13 +128,18 @@ already done.
   policy unchanged, so the agent gets dense feedback with no way to farm it.
   Everything else in the reward is a real cost: elapsed time, plus a finish
   bonus. **That guarantee depends on mass being conserved exactly.**
-- **Episodes are five-minute windows**, not whole floors — 20–40 minutes is too
-  long a horizon for credit assignment. `reset` starts the floor at a uniformly
-  random point through the job, so the policy sees fresh floors, half-done
-  floors, and floors down to the last stubborn worn-lane patches. A policy that
-  only knew the opening move would score badly on most of that distribution.
-  The benchmark then runs **to completion**, which is the number that answers
-  the question.
+- **Episodes are the full 15-minute job** (`sim.max_steps = 4500` at
+  `control_dt = 0.2 s`), not a window. They *were* five-minute windows when the
+  floor carried 40 lb of grit and took 20–40 minutes; at the corrected 20 g/m²
+  loading the window became actively wrong, because thoroughness means getting
+  every cell under threshold and that needs more time than the window had — so
+  no policy could ever finish and the finish bonus was unreachable. See the
+  reasoning in `config.py` above `max_steps`.
+  `reset` still starts the floor at a uniformly random point through the job, so
+  the policy sees fresh floors, half-done floors, and floors down to the last
+  stubborn worn-lane patches. A policy that only knew the opening move would
+  score badly on most of that distribution. The benchmark then runs **to
+  completion**, which is the number that answers the question.
 
 ## Stack
 

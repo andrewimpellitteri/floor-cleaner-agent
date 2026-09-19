@@ -78,11 +78,21 @@ CSV_COLUMNS = [
     "fraction_removed", "worst_residual", "fraction_clean",
     "standoff_mean", "tilt_mean", "policy_loss", "value_loss",
     "entropy", "approx_kl", "clip_fraction", "explained_variance",
+    # Issue #4 stop signal: pre-norm advantage std. Collapses when the critic
+    # memorises the drizzle and the normalised advantage becomes noise.
+    # `adv_std_global` is the exact figure; `adv_std` averages minibatch stds.
+    # `explained_variance_f` is EV against the residual the network actually
+    # learns -- plain `explained_variance` now reads ~1 by construction and
+    # says nothing. `value_mean`/`phi_mean` are the offset wiring check.
+    "adv_std", "adv_std_global", "explained_variance_f",
+    "value_mean", "phi_mean",
     # T3a — the cut-and-abandon panel: adhered falling while deposited climbs
     # and drained stays flat is the characteristic failure, invisible in
     # reward. Logged everywhere (CSV + W&B) so pinning them to one dashboard
     # panel is one click.
-    "drained_kg", "adhered_kg", "deposited_kg", "suspended_kg",
+    # Issue #3: delivered (reached trough, incl. pond) vs drained (left).
+    "drained_kg", "delivered_kg", "trough_grit_kg",
+    "adhered_kg", "deposited_kg", "suspended_kg",
     "seconds",
 ]
 
@@ -93,6 +103,15 @@ def payload_template(runner: RunnerState, update: jnp.ndarray) -> dict:
     ts = runner.train_state
     return {
         "update": update,
+        # What the value head MEANS. Since issue #4 the network predicts the
+        # residual f in V(s) = f(s) - REWARD_SCALE*Phi(s), not the full value.
+        # A pre-#4 checkpoint holds a head trained to output V directly (~540
+        # on a dirty floor); restoring it here would silently give
+        # V = 540 - SCALE*Phi ~ 1080 and quietly poison the run. Orbax matches
+        # the tree structure on restore, so an old checkpoint without this key
+        # fails loudly -- which is the point. Bump it if the meaning changes
+        # again.
+        "value_head_semantics": jnp.array(2, dtype=jnp.int32),
         "params": ts.params,
         "opt_state": ts.opt_state,
         "step": ts.step,
@@ -152,6 +171,14 @@ def main():
         template = payload_template(runner, jnp.array(0))
         restored = ckptr.restore(ckpt_path, ocp.args.PyTreeRestore(item=template))
         restored = jax.tree.map(jnp.asarray, restored)
+        semantics = int(restored.get("value_head_semantics", 1))
+        if semantics != 2:
+            sys.exit(
+                f"checkpoint value_head_semantics={semantics}, expected 2. This "
+                f"checkpoint predates the Wiewiora offset (issue #4): its value "
+                f"head outputs the FULL value, but the trainer now treats that "
+                f"output as the residual f in V = f - REWARD_SCALE*Phi. "
+                f"Resuming would double-count the offset. Start a fresh run.")
         runner = runner._replace(
             train_state=runner.train_state.replace(
                 params=restored["params"],
@@ -239,6 +266,8 @@ def main():
                 f"r {float(summary['reward_mean'][last]):9.2f}  "
                 f"removed {float(summary['fraction_removed'][last]):5.3f}  "
                 f"clean {float(summary['fraction_clean'][last]):5.3f}  "
+                f"drained {float(summary['drained_kg'][last]):6.3f}  "
+                f"adv_std {float(summary['adv_std'][last]):7.4f}  "
                 f"H {float(summary['entropy'][last]):5.3f}  "
                 f"kl {float(summary['approx_kl'][last]):6.4f}  "
                 f"eps {wall / n / ppo.batch_size * 1e6:6.0f} us/step  "
