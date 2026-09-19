@@ -68,7 +68,10 @@ prune_snapshots() {
   local snapdir="$base/snapshots"
   [ -d "$snapdir" ] || return 0
   local best="" last="" d keep
-  [ -f "$base/BEST_UPDATE" ] && best=$(awk '{printf "%06d", $1}' "$base/BEST_UPDATE" 2>/dev/null)
+  # BEST_UPDATE is "v2 <update> <tier> ..." since the pinned-floor eval
+  # (train.py); older runs wrote "<update> <tier> ..." with no tag. Either way
+  # the update number is what selects the snapshot to keep.
+  [ -f "$base/BEST_UPDATE" ] && best=$(awk '$1=="v2"{printf "%06d",$2;next}{printf "%06d",$1}' "$base/BEST_UPDATE" 2>/dev/null)
   last=$(ls "$snapdir" 2>/dev/null | grep -E "^update_[0-9]+$" | sort | tail -1 | sed 's/update_//')
   for d in "$snapdir"/update_*; do
     [ -d "$d" ] || continue
