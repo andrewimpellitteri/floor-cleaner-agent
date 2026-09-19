@@ -1,0 +1,54 @@
+# Horizon-matched scripted references, and why the old ones were not comparable
+#
+# Prompted by issue #14. Four PINNED floors (PRNGKey(10_000 + k), k = 0..3),
+# fresh start, scored on fraction_clean. Measured with sim.max_steps raised to
+# 9000 so thirty minutes is INSIDE the episode -- the only honest way to reach a
+# 30-minute number now that run_episode freezes at truncation. Scripted policies
+# read no observation, so changing max_steps cannot affect them.
+
+strategy        15 min (900 s)      30 min (1800 s)     gain
+--------------------------------------------------------------------
+far_to_near     0.333 +- 0.046      0.720 +- 0.058      +0.387
+near_to_far     0.258 +- 0.038      0.450 +- 0.056      +0.192
+random          0.235 +- 0.029      0.375 +- 0.084      +0.140
+chase_worst     0.059 +- 0.017      0.059 +- 0.017      +0.000
+
+far_to_near per-floor at 15 min: 0.300  0.401  0.347  0.283
+
+THE CORRECTION. 0.720 reproduces the 0.722 that ANSWER.md, action_leverage.txt
+and shaping_gradient_ablation.txt all quote, so the reference itself was measured
+correctly. What was wrong is what it was compared against: 0.722 is a THIRTY-
+minute number, and the training episode is fifteen minutes (max_steps = 4500 at
+control_dt = 0.2 s). At the horizon the trainer actually optimises, far_to_near
+scores 0.333.
+
+So every "learned ~0.44 against scripted 0.722" line was read across a 2x
+horizon difference, and the gap it implied is not the gap that exists. The
+learned policies were additionally being credited on the reset distribution
+rather than a fresh floor, which cuts the other way (the one policy measured
+fresh scored 0.031). Both instruments are now fixed; neither conclusion in
+ANSWER.md rests on the learned policies, which is why the practical answer
+survives.
+
+WHAT THE HORIZON SPLIT ACTUALLY SHOWS -- it strengthens the coverage argument
+rather than weakening it. Systematic coverage does not merely win, its advantage
+COMPOUNDS with time:
+
+  far_to_near over random, at 15 min: +0.098
+  far_to_near over random, at 30 min: +0.345   (3.5x larger)
+
+That is what a coverage-limited job predicts. A full-pass strategy keeps finding
+floor it has not touched, so its gain per minute holds up; random re-covers
+ground it already cleaned, so its gain per minute decays. chase_worst is the
+limiting case and the cleanest evidence of all: it gains EXACTLY ZERO between 15
+and 30 minutes (0.059 -> 0.059, identical to three decimals on all four floors).
+It has saturated -- another fifteen minutes of the highest per-pass efficiency in
+the suite buys nothing at all, because efficiency multiplies an area it refuses
+to enlarge.
+
+CAVEAT ON THE NEW EVAL INSTRUMENT. At 15 min, far_to_near's floor-to-floor
+spread is +-0.046 while its whole margin over random is 0.098. Four pinned floors
+therefore separate STRATEGIES but are marginal for separating nearby updates of
+one policy; `eval/remaining_kg_spread` is logged so this stays visible, and
+TrainConfig.eval_floors should be raised if model selection starts turning on
+differences smaller than the spread.

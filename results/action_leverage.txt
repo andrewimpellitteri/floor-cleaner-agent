@@ -71,9 +71,32 @@ policy sigma held near its initialisation instead of inflating to ~0.8 -- buys
 here, and a direct prediction of the leverage result: a knob cannot matter when
 the action-attributable signal is 0.19% of the batch noise.
 
-SCOREBOARD OF THE REWARD FIXES (fresh floor, training-time fraction_clean).
+SCOREBOARD OF THE REWARD FIXES (training-time fraction_clean).
   before any fix (5-run ablation, final)   0.354 - 0.364
   after gamma + DIRT_COST + fresh eval     0.441 - 0.450
-  hand-coded far_to_near, 30 min           0.722
-The fixes are worth a real +0.08, and they removed a genuine bug. They do not
-close the gap to the scripted sweep, and the leverage number above says why.
+The fixes are worth a real +0.08 on this metric, and they removed a genuine bug.
+
+CORRECTION (issue #14). This table originally carried a third row --
+"hand-coded far_to_near, 30 min  0.722" -- and concluded that the fixes "do not
+close the gap to the scripted sweep". Both the row and the conclusion were
+mis-stated, in two independent ways, and the row has been removed rather than
+patched because nothing about it was comparable to the two above it:
+
+  * HORIZON. 0.722 is a thirty-minute score. The training episode is fifteen
+    minutes (max_steps = 4500 at control_dt = 0.2 s). Re-measured on four pinned
+    fresh floors, far_to_near scores 0.333 +- 0.046 at 15 min and 0.720 +- 0.058
+    at 30 -- see results/eval_horizon.txt. The reference was right; setting it
+    against a 15-minute number was not.
+  * DISTRIBUTION. The 0.441 - 0.450 figures are training-time fraction_clean,
+    and training resets start the floor at a random point through the job. The
+    header calling them "fresh floor" was simply wrong. The same policy measured
+    fresh scored 0.031 deterministic / 0.210 stochastic
+    (results/shaping_gradient_ablation.txt), so this metric flatters by a wide
+    margin in the other direction.
+
+The honest fresh-floor, horizon-matched comparison is the one already in
+shaping_gradient_ablation.txt, which is apples-to-apples (6 seeds, fresh, 30-min
+cap on BOTH sides): far_to_near 0.722 against learned 0.031 / 0.210. The
+conclusion the leverage number supports is unchanged and does not depend on
+either mis-stated figure: the learned policies do not approach the scripted
+sweep, and the action-attributable signal being 0.19% of the batch noise is why.
