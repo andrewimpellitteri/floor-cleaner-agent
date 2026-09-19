@@ -240,8 +240,15 @@ def test_wiewiora_offset_cancels_drizzle():
     r_gen = float(r) - REWARD_SCALE * (gamma * phi1 - phi0)
     delta = float(r) + gamma * float(jnp.where(term, 0.0, v1)) - v0
     expected = -TIME_COST * dt + (FINISH_BONUS if bool(term) else 0.0)
-    assert r_gen == pytest.approx(expected, rel=1e-4, abs=1e-6)
-    assert delta == pytest.approx(expected, rel=1e-4, abs=1e-6)
+    # Tolerance is set by float32 cancellation, not by the algebra. Both r_gen
+    # and delta recover a ~0.2-sized quantity by subtracting two numbers of
+    # size REWARD_SCALE*|Phi| (~545 here), so the achievable precision is a few
+    # float32 eps of THAT magnitude -- about 6.5e-5, not 1e-6. Derive it rather
+    # than hard-coding, so the bound tracks REWARD_SCALE and Phi if either
+    # changes. (Measured round-off at gamma=0.9998: 6.2e-6, well inside this.)
+    prec = 4.0 * REWARD_SCALE * max(abs(phi0), abs(phi1)) * float(np.finfo(np.float32).eps)
+    assert r_gen == pytest.approx(expected, rel=1e-4, abs=prec)
+    assert delta == pytest.approx(expected, rel=1e-4, abs=prec)
 
 
 def _zero_value_head(params):

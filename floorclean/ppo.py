@@ -50,11 +50,21 @@ class PPOConfig:
 
     lr: float = 3e-4
     anneal_lr: bool = True
-    # 0.2 s per step. 0.999 gives a ~1000-step (~3.5 min) effective horizon,
-    # which is what a 15-minute episode needs; 0.997 (~110 s) could not see far
-    # enough ahead to value pushing slurry the length of the bay.
+    # 0.2 s per step, and the episode is sim.max_steps = 4500 steps (15 min).
+    #
+    # This was 0.999, justified as "a ~1000-step horizon, which is what a
+    # 15-minute episode needs". That reasoning was wrong: 1/(1-gamma) = 1000
+    # steps is 3.3 min, less than a quarter of the episode, so the agent could
+    # not see its own terminal state. Measured consequence: gamma^4500 = 0.0111,
+    # so FINISH_BONUS = 400 was worth 4.4 reward units at episode start against
+    # ~200 of accumulated time cost over the same horizon -- a ratio of 0.022.
+    # The finish bonus was invisible even before you ask whether it is
+    # reachable, and it fired exactly zero times in 750M steps of training.
+    #
+    # 0.9998 gives a 5000-step (16.7 min) horizon, just longer than the
+    # episode, and gamma^4500 = 0.407. The terminal event is now worth seeing.
     # MUST match CleaningEnv(discount=...) -- the shaping term uses it.
-    gamma: float = 0.999
+    gamma: float = 0.9998
 
     # How much of the potential to hand the critic analytically, in
     # V(s) = f(s) - alpha*REWARD_SCALE*Phi(s).

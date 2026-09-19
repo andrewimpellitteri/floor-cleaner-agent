@@ -146,7 +146,7 @@ class CleaningEnv:
     """Single-environment pure functions. Use `jax.vmap` for a batch."""
 
     def __init__(self, cfg: Config | None = None, obs_cfg: ObsConfig | None = None,
-                 discount: float = 0.999):
+                 discount: float = 0.9998):
         self.cfg = cfg or Config()
         self.obs_cfg = obs_cfg or ObsConfig()
         # Discount for the potential-based shaping term F = gamma*Phi(s') - Phi(s).
