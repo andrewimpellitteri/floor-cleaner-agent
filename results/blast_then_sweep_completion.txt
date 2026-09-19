@@ -1,0 +1,24 @@
+# blast_then_sweep to completion (2026-09-19) -- T4 warning + correction
+# Seeds 0-1, 120-min cap, current main. Phase machine verified healthy first:
+# all 4 phases used (blast 44% of time), blast P_peak 18.4 kPa (cuts everything
+# under ~18 kPa), sweep P 190 Pa (push only). No stuck-at-trough bug.
+
+120-min completion:
+  seed 0: worst=0.1201 clean=97.9% adhered=0.021 loose=0.005 drained=1.048
+  seed 1: worst=0.0442 clean=97.9% adhered=0.019 loose=0.004 drained=1.134
+
+Findings:
+1. The "3.7x more stuck" is a FIXED-WINDOW artifact. A blast lane costs ~53 s
+   (23 s blast + returns + 16 s sweep) vs ~30 s for far_to_near, so at the
+   30-min cap blast has covered ~60% of the floor. At completion it leaves
+   LESS adhered (0.02) than far_to_near's 0.06-0.11 -- the 18 kPa blast cuts
+   what the 10.6 kPa compromise cannot. T4 must compare to completion (as
+   planned); a capped comparison misreports any two-pass method by construction.
+2. Metric flips the winner: by mass-at-completion blast wins (0.02 vs 0.06+);
+   by worst-cell far_to_near wins (0.034 vs 0.12/0.04). Report both, decide
+   which the job cares about (Andrew's criterion is every-cell: worst matters).
+3. The real blast defect is edge stripes, not a broken phase: worst cells
+   (245/248 dirty cells unvisited at 120 min, seed 0) sit at the start-wall
+   corner with virgin loading -- lane spacing 0.18 m == fan width 0.18 m is
+   knife-edge, and wall-adjacent rows fall outside every pass's impact offset.
+   Fix direction is lane overlap for the blast pass, not the phase machine.
