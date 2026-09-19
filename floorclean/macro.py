@@ -115,6 +115,25 @@ class MacroEnv:
     def cfg(self):
         return self.env.cfg
 
+    def __getattr__(self, name):
+        """Delegate anything not overridden here to the wrapped CleaningEnv.
+
+        The render and eval paths reach for env.floor, env.floor_mask,
+        env.n_floor and friends. Without this the first eval raises
+        AttributeError inside train.py's try/except, which degrades the run to
+        "curves-only" and silently drops the fresh-floor benchmark -- the one
+        honest metric, and the whole point of the eval fix. Observed on the
+        first macro launch: "eval renders failed (AttributeError: 'MacroEnv'
+        object has no attribute 'floor')".
+
+        Guarded against recursion: dataclass __init__ sets `env` via
+        object.__setattr__, and any lookup before that must raise rather than
+        re-enter __getattr__ looking for `env` again.
+        """
+        if name == "env":
+            raise AttributeError(name)
+        return getattr(self.env, name)
+
     def obs_shapes(self):
         return self.env.obs_shapes()
 
