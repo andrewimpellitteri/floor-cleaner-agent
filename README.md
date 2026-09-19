@@ -5,6 +5,13 @@ physics instead of opinion. See `ORIENTATION.md` first (domain facts, physics,
 invariants), `WORKBOARD.md` for the task list, and `ANSWER.md` for the current
 best answer to the practical question.
 
+`math_analysis.pdf` derives the closed-form scaling laws behind those answers
+(impingement pressure `P ~ cos^4(theta) d^-2`, the soft cutting threshold, film
+depth `h ~ Q^(3/5)`, and the cutting surplus `Da ~ 42` that makes the job
+coverage-limited). Its constants check out against `floorclean/config.py`; note
+it assumes a 0.3 m/s walking pace, which `results/walking_speed.md` has since
+measured at 0.24. Build it with `pdflatex math_analysis.tex`.
+
 ## Stack
 
 End-to-end JAX: the `floorclean/` environment, rollouts, GAE and PPO updates

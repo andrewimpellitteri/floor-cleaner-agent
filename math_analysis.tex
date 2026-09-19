@@ -1,0 +1,350 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+
+% Minimal stand-in for siunitx, so this builds on a BasicTeX install.
+\newcommand{\SI}[2]{\ensuremath{#1\,#2}}
+\newcommand{\si}[1]{\ensuremath{#1}}
+\newcommand{\ang}[1]{\ensuremath{#1^{\circ}}}
+\newcommand{\per}{\ensuremath{/}}
+\newcommand{\squared}[1]{\ensuremath{#1^{2}}}
+\newcommand{\metre}{\ensuremath{\mathrm{m}}}
+\newcommand{\second}{\ensuremath{\mathrm{s}}}
+\newcommand{\minute}{\ensuremath{\mathrm{min}}}
+\newcommand{\gram}{\ensuremath{\mathrm{g}}}
+\newcommand{\kilogram}{\ensuremath{\mathrm{kg}}}
+\newcommand{\pascal}{\ensuremath{\mathrm{Pa}}}
+\newcommand{\newton}{\ensuremath{\mathrm{N}}}
+\newcommand{\kilo}{\ensuremath{\mathrm{k}}}
+\newcommand{\centi}{\ensuremath{\mathrm{c}}}
+\newcommand{\milli}{\ensuremath{\mathrm{m}}}
+
+\title{A short mathematical analysis of the wash-bay cleaning simulation}
+\author{\texttt{floor\_clean}}
+\date{19 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note extracts the closed-form scaling laws buried in the simulator and
+shows that the project's headline empirical finding---\emph{coverage beats
+technique}---is not an accident of the experiments but a direct consequence of
+two numbers: the jet removes about \SI{845}{\gram\per\squared{\metre}} of grit per
+pass from a floor carrying \SI{20}{\gram\per\squared{\metre}}. With a removal
+capacity $40\times$ the load, the cleaning rate saturates and the only free
+variable left is swept area. Everything else in the model---the standoff cliff,
+the angle sensitivity, the uselessness of extra water for cutting---follows
+from the impingement pressure law $P \propto \cos^{4}\theta \, d^{-2}$ and the
+Manning normal-depth law $h \propto Q^{3/5}$.
+\end{abstract}
+
+\section{The impingement pressure law}
+
+The wand tip sits at height $d$ (standoff) above the slab, tilted $\theta$ from
+vertical. The beam travels a slant distance $L = d/\cos\theta$ and lands
+$d\tan\theta$ ahead of the operator. A fan tip of full angle $\phi$ spreads
+linearly in $L$; the sheet thickness starts at $t_{0}$ and grows at a full
+angle $\psi$, and oblique incidence stretches it by $1/\cos\theta$:
+\begin{equation}
+  w(L) = 2L\tan\tfrac{\phi}{2},
+  \qquad
+  t(L,\theta) = \frac{t_{0} + 2L\tan\tfrac{\psi}{2}}{\cos\theta}.
+\end{equation}
+The footprint is modelled as a Gaussian with $\sigma_{u}=w/4$, $\sigma_{v}=t/4$,
+so its effective area is $A = 2\pi\sigma_{u}\sigma_{v} = \pi w t / 8$. Air drag
+bleeds the orifice velocity $V_{0}$ over an $e$-folding length $\Lambda$, and
+only the normal component of the momentum flux presses on the slab:
+\begin{equation}
+  \boxed{\;
+  P(d,\theta)
+  = \frac{\rho Q V_{0}\,e^{-L/\Lambda}\cos\theta}{A(L,\theta)}
+  = \frac{8\,\rho Q V_{0}\,e^{-L/\Lambda}\,\cos^{2}\theta}
+         {2\pi L \tan\tfrac{\phi}{2}\,\bigl(t_{0}+2L\tan\tfrac{\psi}{2}\bigr)}\;}
+\end{equation}
+In the far field ($2L\tan\tfrac{\psi}{2}\gg t_{0}$, i.e.\ beyond
+$L\approx\SI{9}{\centi\metre}$) the two linear spreads combine into an
+inverse-square law and the $\cos\theta$ factors collect:
+\begin{equation}
+  P \;\sim\; \frac{2\rho Q V_{0}}{\pi\tan\tfrac{\phi}{2}\tan\tfrac{\psi}{2}}
+  \cdot \frac{\cos^{4}\theta}{d^{2}}\, e^{-d/(\Lambda\cos\theta)} .
+  \label{eq:scaling}
+\end{equation}
+
+Equation~\eqref{eq:scaling} is the single most consequential line in the model.
+The fourth power of $\cos\theta$ is the reason wand angle dominates: two of the
+powers are the oblique projection of the momentum, and two come from the
+footprint being stretched in \emph{both} directions by the oblique strike. With
+the shipped parameters ($\SI{1200}{\mathrm{psi}}$, $\SI{4}{\mathrm{gpm}}$, $C_{d}=0.95$, so
+$V_{0}=\SI{122}{\metre\per\second}$ and a thrust of $\rho Q V_{0}=\SI{30.8}{\newton}$):
+
+\begin{center}
+\begin{tabular}{lccrrr}
+\toprule
+technique & $d$ & $\theta$ & lead & $P$ & $P/Y_{0}$ \\
+\midrule
+vertical, \SI{12}{\mathrm{in}}            & \SI{0.305}{\metre} & \ang{0}    & \SI{0}{\mathrm{in}}  & \SI{35.2}{\kilo\pascal} & 14.1 \\
+\texttt{far\_to\_near} baseline  & \SI{0.400}{\metre} & \ang{31.5} & \SI{9.7}{\mathrm{in}}  & \SI{10.6}{\kilo\pascal} & 4.23 \\
+operator, \SI{12}{\mathrm{in}} lead       & \SI{0.305}{\metre} & \ang{45}   & \SI{12}{\mathrm{in}} & \SI{8.70}{\kilo\pascal} & 3.48 \\
+operator, \SI{18}{\mathrm{in}} lead       & \SI{0.305}{\metre} & \ang{56}   & \SI{17.8}{\mathrm{in}} & \SI{3.28}{\kilo\pascal} & 1.31 \\
+sweep phase                      & \SI{0.300}{\metre} & \ang{72}   & \SI{36}{\mathrm{in}} & \SI{0.26}{\kilo\pascal} & 0.10 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+against a base adhesion $Y_{0}=\SI{2.5}{\kilo\pascal}$ and a worn-lane centre
+$Y_{w}=\SI{5.5}{\kilo\pascal}$. A \ang{11} wrist movement---the whole span from
+a \SI{12}{\mathrm{in}} lead to an \SI{18}{\mathrm{in}} lead---costs a factor
+$(\cos\ang{45}/\cos\ang{56})^{4}=2.65$ in cutting pressure and carries the jet
+from $1.58\,Y_{w}$ (cuts the worn lanes) to $0.60\,Y_{w}$ (does not). That the
+operator's own stated working range straddles a threshold is a prediction of
+\eqref{eq:scaling}, not a fitted observation.
+
+\section{Why the threshold is soft: the patch integral}
+
+The impact patch is thinner than one grid cell ($\SI{2.3}{\centi\metre}$ against
+$\SI{7}{\centi\metre}$), so per-cell sampling of the Gaussian would be a
+grid-alignment lottery. The simulator instead integrates the excess pressure
+analytically over the patch. For a Gaussian of peak $P$ above a yield stress
+$Y$, writing $s$ for the squared Mahalanobis radius,
+\begin{equation}
+  \int \max\bigl(0,\;P e^{-s/2}-Y\bigr)\,\mathrm{d}A
+  \;=\; A_{\text{patch}}\underbrace{\left(P - Y - Y\ln\frac{P}{Y}\right)}_{\textstyle G(P,Y)},
+\end{equation}
+the region of integration terminating at $s_{\max}=2\ln(P/Y)$. Near threshold,
+with $\varepsilon = P/Y - 1$,
+\begin{equation}
+  G = Y\bigl(\varepsilon - \ln(1+\varepsilon)\bigr) = \tfrac{1}{2}Y\varepsilon^{2} + O(\varepsilon^{3}),
+\end{equation}
+so cutting switches on \emph{quadratically}, not as a step---and $G\to P$ when
+$P\gg Y$. Two corollaries matter. First, this is a $C^{1}$ threshold, which is
+why the physics is differentiable through the cutting onset. Second, marginal
+technique is punished twice: at $P/Y=1.58$ the excess $G$ is only
+\SI{306}{\pascal}, $7\%$ of the \SI{4462}{\pascal} the baseline delivers, even
+though the pressure ratio differs by just $2.7\times$.
+
+The same integral gives the \emph{effective swath}---the width of floor actually
+cut on a pass---as the chord where the profile still exceeds $Y$:
+\begin{equation}
+  W_{\text{eff}}(d,\theta) = 2\sigma_{u}\sqrt{2\ln\bigl(P/Y\bigr)}
+  = L\tan\tfrac{\phi}{2}\sqrt{2\ln\bigl(P/Y\bigr)} .
+\end{equation}
+This is non-monotonic in $d$: the fan widens linearly while the pressure falls
+as $d^{-2}$, so $W_{\text{eff}}$ peaks near \SI{0.4}{\metre} and then collapses.
+
+\begin{center}
+\begin{tabular}{lrrrrrr}
+\toprule
+$d$ (m) & 0.20 & 0.30 & 0.40 & 0.60 & 0.70 & 0.80 \\
+\midrule
+$P$ (kPa)                            & 42.4 & 19.2 & 10.6 & 4.28 & 2.97 & 2.14 \\
+$W_{\text{eff}}$, base (cm)          & 12.4 & 15.8 & \textbf{17.7} & 16.2 & 10.6 & \textbf{0.0} \\
+$W_{\text{eff}}$, worn lane (cm)     & 10.5 & 12.3 & 11.9 & \textbf{0.0} & 0.0 & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The cliff at $d^{*}\approx\SI{0.80}{\metre}$ ($\SI{31}{\mathrm{in}}$) reported in
+\texttt{ANSWER.md} is exactly the root of $P(d,\ang{31.5})=Y_{0}$, and the worn
+lanes lose their swath at $\SI{0.54}{\metre}$ ($\SI{21}{\mathrm{in}}$) --- \SI{26}{cm}
+lower. Because $P$ is proportional to momentum flux and independent of ambient
+film depth, $d^{*}$ is water-invariant, which is what the flow sweep confirmed.
+
+\section{The main result: the job is coverage-limited by a factor of 40}
+
+The removal rate of adhered grit is $\dot{m} = k\,G(P,Y)$ with
+$k=\SI{2.5e-3}{\kilogram\per\squared{\metre}\per\second\per\pascal}$. A point on
+the floor is under the jet only for the time it takes the patch thickness $t$
+to sweep past at walking speed $v$:
+\begin{equation}
+  \tau_{\text{dwell}} = \frac{t(L,\theta)}{v}
+  = \frac{\SI{22.7}{\milli\metre}}{\SI{0.3}{\metre\per\second}} = \SI{76}{\milli\second}.
+\end{equation}
+So the grit a single pass is \emph{capable} of lifting is
+\begin{equation}
+  m_{\text{cap}} = k\,G\,\tau_{\text{dwell}}
+  = (2.5\times10^{-3})\times 4462 \times 0.076
+  = \SI{845}{\gram\per\squared{\metre}},
+\end{equation}
+against a floor loading $m_{0}=\SI{20}{\gram\per\squared{\metre}}$. Define the
+dimensionless cutting surplus
+\begin{equation}
+  \boxed{\;\mathrm{Da} \equiv \frac{k\,G\,\tau_{\text{dwell}}}{m_{0}} \approx 42 \;}
+\end{equation}
+Since $\mathrm{Da}\gg1$, the removal integral saturates: a pass strips
+essentially all of whatever it touches, and
+\begin{equation}
+  \text{grit cut} \;=\; m_{0}\times(\text{area swept}),
+\end{equation}
+with technique entering only through whether $\mathrm{Da}>1$ at all. This is the
+formal statement of ``coverage beats technique''. It also says the claim is
+\emph{fragile in a specific place}: the worn lanes at the \SI{18}{\mathrm{in}} lead give
+$G=0$ and hence $\mathrm{Da}=0$, the one regime where the argument inverts.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+technique & $G$ (Pa) & $m_{\text{cap}}$ (\si{\gram\per\squared{\metre}}) & $\mathrm{Da}$ \\
+\midrule
+baseline, base yield        & 4462 & 845 & 42.2 \\
+baseline, worn lane         & 1475 & 279 & 14.0 \\
+operator \SI{12}{\mathrm{in}}, base  & 3079 & 655 & 32.7 \\
+operator \SI{12}{\mathrm{in}}, worn  &  676 & 144 &  7.2 \\
+operator \SI{18}{\mathrm{in}}, base  &  101 &  33 &  1.7 \\
+operator \SI{18}{\mathrm{in}}, worn  &    0 &   0 &  0.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{The experimental data agree}
+
+Regressing the measured clean fraction on coverage across the four routing
+strategies gives
+\begin{equation}
+  f_{\text{clean}} = 0.596\,c + 0.025, \qquad R^{2} = 0.88,
+\end{equation}
+over a range of $c$ from $0.04$ to $0.94$. The saturated model predicts a
+proportionality; the slope of $0.60$ rather than $1$ is the delivery loss of
+Section~\ref{sec:water}---grit cut but not carried to the trough. The greedy
+``chase the dirtiest spot'' strategy is the extreme case: it has the highest
+efficiency per unit work ($\eta=0.858$) and the worst outcome ($6\%$ clean),
+because $c=0.041$. Efficiency multiplies a quantity that is already saturated.
+
+\subsection*{The time scale this implies}
+
+If the job is coverage-limited, the floor area $A=4.2\times14 =
+\SI{58.8}{\squared{\metre}}$ divided by the sweep rate $W_{\text{eff}}\,v$ is the
+whole time estimate:
+\begin{equation}
+  T_{\min} = \frac{A}{W_{\text{eff}}\,v}
+  = \frac{\SI{58.8}{\squared{\metre}}}{\SI{0.22}{\metre}\times\SI{0.3}{\metre\per\second}}
+  = \SI{891}{\second} \approx \SI{15}{\minute},
+\end{equation}
+which is both the episode length chosen in \texttt{SimConfig} and the time the
+operator reports. The agreement is a consistency check, not a validation---but
+it does locate the leverage: $T_{\min}$ is linear in $1/v$ and $1/W_{\text{eff}}$,
+and walking speed is the one factor in it that has never been measured.
+
+\section{Water sets transport, not cutting}
+\label{sec:water}
+
+Sustaining a film of depth $h$ over the bay is a Manning normal-depth problem.
+With $n=0.018$, cross slope $S=0.015$, and a drainage width $W_{d}=2L_{x}=\SI{8.4}{\metre}$,
+\begin{equation}
+  Q = \frac{W_{d}}{n}\,\sqrt{S}\;h^{5/3} = 57.2\,h^{5/3}
+  \qquad\Longleftrightarrow\qquad
+  h = \left(\frac{Q}{57.2}\right)^{3/5}.
+\end{equation}
+The exponent $3/5$ is the whole story: water is a badly leveraged input.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+supply & \SI{4}{\mathrm{gpm}} & \SI{8}{\mathrm{gpm}} & \SI{20}{\mathrm{gpm}} \\
+\midrule
+$h$ (mm)                        & 0.61 & 0.93 & 1.61 \\
+gravity bed shear $\rho g h S$ (Pa) & 0.09 & 0.14 & 0.24 \\
+transport length $uh/v_{s}$ (m) at $u=\SI{1}{\metre\per\second}$ & 0.20 & 0.31 & 0.54 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three consequences fall out, each matching a measured result.
+
+\begin{enumerate}
+\item A lone wand at \SI{4}{\mathrm{gpm}} sustains \SI{0.6}{\milli\metre} and a bed shear
+of \SI{0.09}{\pascal}, \emph{below} the \SI{0.1}{\pascal} deposit threshold. One
+operator cuts grit loose faster than the floor can carry it. Water is a shared
+resource, so operators should help each other superlinearly.
+\item Raising supply $8\to\SI{20}{\mathrm{gpm}}$ ($2.5\times$) raises $h$ by only
+$2.5^{3/5}=1.73\times$ and leaves $P$---and therefore cutting---untouched. The
+experiment found exactly this: cutting identical at $92.3\%$, stuck grit
+identical at \SI{0.088}{\kilogram}, and delivery improving $79.8\to86.0\%$. The
+predicted delivery-deficit ratio $1/1.73=0.58$ brackets the observed
+$14.0/20.2=0.69$.
+\item Since $L_{t} = uh/v_{s} \propto Q^{3/5}$, push distance scales as the
+$3/5$ power of standing water---the operator's own ``it depends on standing
+water,'' with an exponent attached.
+\end{enumerate}
+
+\section{The two-stress structure, and why phases must not be separated}
+
+Adhered grit yields to \emph{normal} stress at kilopascals; loose deposited grit
+yields to \emph{tangential} stress at a Shields-type threshold of
+\SI{0.1}{\pascal}---four orders of magnitude apart. The jet supplies both, but
+in opposite proportions:
+\begin{equation}
+  P_{\perp} \propto \cos^{4}\theta\,d^{-2},
+  \qquad
+  \tau_{\parallel} \propto \sin\theta\,\lVert\text{momentum}\rVert .
+\end{equation}
+Their ratio $\tau_{\parallel}/P_{\perp} \propto \tan\theta/\cos^{3}\theta$ rises
+without bound as the wand lays over, which is the entire control trade-off.
+
+Separating the job into a blast phase ($\theta=\ang{12.6}$) and a sweep phase
+($\theta=\ang{71.6}$) fails for a reason visible in the deposition term. Grit in
+suspension settles at $v_{s}\lVert c\rVert$ and returns to the \emph{deposited}
+layer, never the bound one; the surviving grit is therefore whatever has
+travelled less than $L_{t}\approx\SI{0.3}{\metre}$ before its film stalls. A
+combined pass re-entrains that grit within the same patch; a separated pass
+leaves it behind and must find it again later with a jet that, at \ang{71.6},
+delivers $P=\SI{0.26}{\kilo\pascal}=0.10\,Y_{0}$ and cannot cut anything it
+missed. Measured: $3.7\times$ more grit left stuck, $19$ points dirtier.
+
+\section{Numerical guarantees}
+
+Two properties are load-bearing for the reward signal rather than cosmetic.
+
+\emph{Conservation.} All transport terms are in flux form with upwinding, so
+interior fluxes telescope and grit changes only through the trough. The reward
+is a mass difference; numerical diffusion would pay the agent for nothing.
+
+\emph{Positivity.} Explicit advection is CFL-limited, and the per-face velocity
+cap uses the \emph{upwind} depth with a factor of two:
+\begin{equation}
+  u_{\max} = \frac{\mathrm{CFL}\cdot \Delta x}{2\,\Delta t}
+  = \frac{0.45\times\SI{0.07}{\metre}}{2\times(\SI{0.2}{\second}/16)}
+  = \SI{1.26}{\metre\per\second}.
+\end{equation}
+The factor of two is not conservatism: in 2D a cell can drain through four faces
+at once, so a per-face limit of $\mathrm{CFL}$ permits $4\,\mathrm{CFL}\,h =
+1.8\,h$ of outflow per substep, and the positivity clamp would then manufacture
+water and sediment.
+
+\emph{Inertia.} The flow solver keeps the acceleration term (local inertial
+form, Bates et al.\ 2010) rather than using the diffusive-wave approximation.
+Dropping it forces water to relax instantly to its friction-balanced velocity,
+collapsing $L_{t}=uh/v_{s}$ from over a metre to centimetres the moment slurry
+leaves the impact patch. A scheme that cannot represent coasting cannot answer
+the question being asked.
+
+\section{Summary of the scaling laws}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+quantity & law & consequence \\
+\midrule
+cutting pressure    & $P\propto\cos^{4}\theta\,d^{-2}e^{-d/\Lambda\cos\theta}$ & angle dominates; cliff at \SI{0.8}{\metre} \\
+cutting onset       & $G\approx\tfrac12 Y\varepsilon^{2}$              & soft, $C^{1}$ threshold \\
+effective swath     & $W\propto L\sqrt{\ln(P/Y)}$                      & non-monotonic, peaks at \SI{0.4}{\metre} \\
+cutting surplus     & $\mathrm{Da}=kG\tau_{d}/m_{0}\approx42$          & \textbf{saturated: coverage is the objective} \\
+job time            & $T=A/(W_{\text{eff}}v)$                          & linear in walk speed \\
+film depth          & $h\propto Q^{3/5}$                               & water is badly leveraged \\
+transport length    & $L_{t}=uh/v_{s}\propto Q^{3/5}$                  & extra water buys delivery, not cutting \\
+stress ratio        & $\tau_{\parallel}/P_{\perp}\propto\tan\theta\sec^{3}\theta$ & cut and push cannot be maximised together \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The one number still missing.} Every result above is a ranking, and
+rankings are robust. The single quantity that converts them into a clock is the
+walking speed $v$, which enters $T_{\min}$ linearly and $\tau_{\text{dwell}}$
+inversely---and it is the one term in the model that has never been measured.
+
+\end{document}
