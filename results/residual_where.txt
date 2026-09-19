@@ -1,0 +1,9 @@
+clean_threshold = 0.002  yield_mean = 2500 Pa
+
+seed 0: stuck mass in top-20% yield cells =   6.8% (those cells are 20% of area)   survival: lanes   1.8% vs rest  7.1%   cells>thr   6.4%
+         failing-cell residual, x threshold: median 8.9  p90 12.6  max 13.7
+seed 1: stuck mass in top-20% yield cells =  86.8% (those cells are 20% of area)   survival: lanes  44.3% vs rest  1.8%   cells>thr  12.6%
+seed 2: stuck mass in top-20% yield cells =  10.4% (those cells are 20% of area)   survival: lanes   3.4% vs rest  7.6%   cells>thr   6.6%
+seed 3: stuck mass in top-20% yield cells =  14.1% (those cells are 20% of area)   survival: lanes   6.7% vs rest  9.3%   cells>thr   6.8%
+
+[exited with code 0]
