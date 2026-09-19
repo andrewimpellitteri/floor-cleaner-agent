@@ -268,14 +268,32 @@ to DIVERGE.** That divergence is this project's characteristic failure and it is
 invisible in total reward.
 
 The policy can learn to CUT and then walk away. Breaking adhered grit loose pays
-immediately through the shaping term; carrying the slurry twenty feet to the
-trough pays much later and is much harder. A policy that does the first and
-neglects the second scores well on reward and on `fraction_removed` while
-leaving the floor covered in loose slurry — which is precisely the outcome the
-scripted baselines already fall into (see T1: adhered grit 2.40 → 0.33 kg, but
-1.54 kg left lying loose and only 1.06 kg actually drained).
+immediately through the shaping term; carrying the slurry to the trough pays
+much later and is much harder. A policy that does the first and neglects the
+second would score well on reward and on `fraction_removed` while leaving the
+floor covered in loose slurry.
 
-So: `fraction_removed` climbing while `drained_kg` flattens means stop the run.
+**This paragraph used to cite T1 for that being what the scripted baselines
+actually do** — "adhered grit 2.40 → 0.33 kg, but 1.54 kg left lying loose and
+only 1.06 kg actually drained". That was measured at 5–8× the current dirt
+loading and does not reproduce (issue #5). The staleness banner further up
+covers the T1 sections themselves; this citation sat outside it, in the
+deliverable section, and was still being read as current. At 20 g/m²
+(`results/coverage_vs_routing.txt`, 4 seeds, 30-min cap):
+
+| | T1's claim | now, `far_to_near` @ 8 / 20 gpm |
+|---|---|---|
+| delivered fraction `eta` | "most sits as loose slurry" | **0.826 / 0.919** |
+| stranded loose | 1.54 kg | **0.18 / 0.08 kg** |
+
+`eta` is 0.70–0.92 for *every* strategy at both water levels. Transport binds
+for none of them, so cut-and-walk-away is a hypothetical failure mode here, not
+an observed one.
+
+So: `fraction_removed` climbing while `drained_kg` flattens is still worth
+watching as a divergence — but it has never actually been seen, and it is not
+evidence of a transport bottleneck if it appears.
+
 Third metric worth a panel is `worst_residual` — it is the thoroughness measure
 and the one that decides whether the floor is ever actually finished, since the
 mean goes quiet long before the worn lanes do.
