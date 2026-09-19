@@ -52,12 +52,23 @@ from .baselines import _aim, _standoff, _tilt, _walk
 from .env import CleaningEnv, EnvState, Obs
 from .physics import residual_map
 
-# Control steps per macro-action. A full pass is ~7 m of push at 0.45 m/s
-# (~78 steps) plus up to ~4.2 m of repositioning in x and a walk back out to
-# the wall. 128 steps (25.6 s) covers the worst case, so a macro-action
-# reliably completes the stroke it commits to rather than being cut off
-# mid-push -- which would make the same action mean different things depending
-# on where the operator happened to be standing.
+# Control steps per macro-action. A stroke is a reposition to the wall end of
+# the commanded lane, then ~7 m of push to the trough at 0.45 m/s (~78 steps).
+# `_walk` clips each axis independently at walk_speed = 1 m/s, so repositioning
+# costs max(dx, dy) seconds, not the diagonal.
+#
+# Every stroke after the first starts where the previous one ended -- at the
+# trough -- so the reposition is max(4.2, 7) = 7 s = 35 steps and the whole
+# stroke fits in 113 of the 128 steps. Measured: from (1.0, 7.0) one macro step
+# now reaches y = 14.00 and returns to exactly y = 7.00.
+#
+# The ONE case 128 does not cover is a stroke commanded from the far side of the
+# trough, which needs max(4.2, 14) + 78 = 148 steps; measured, it ends at
+# y = 8.69, short of the trough. That can only happen on the first stroke of an
+# episode, because nothing else leaves the operator across the trough from the
+# lane it is about to work. Raising MACRO_STEPS would fix it, but macro serial
+# cost is num_steps * MACRO_STEPS and that budget has already bitten once, so
+# the first stroke of each episode is allowed to be partial instead.
 MACRO_STEPS = 128
 
 
@@ -158,26 +169,45 @@ class MacroEnv:
         tilt = (a[3] * 0.5 + 0.5) * wc.tilt_max
         return lane_x, side, standoff, tilt
 
-    def _low_level(self, env_state: EnvState, lane_x, side, standoff, tilt):
+    def _at_start(self, env_state: EnvState, lane_x, side):
+        """Is the operator standing at the wall end of `lane_x` on `side`?
+
+        This is the ONLY place a push may begin, which is what makes a macro
+        action mean the same stroke regardless of where the last one ended.
+        """
+        fc = self.env.cfg.floor
+        wall_y = jnp.where(side > 0, fc.length_y, 0.0)
+        return ((jnp.abs(env_state.tip_x - lane_x) < 0.12)
+                & (jnp.abs(env_state.tip_y - wall_y) < 0.12))
+
+    def _low_level(self, env_state: EnvState, lane_x, side, standoff, tilt, pushing):
         """One control action implementing the commanded stroke.
 
-        Two phases, decided from position rather than from a stored counter so
-        the controller is stateless and the macro-step stays a pure scan:
+        Two phases, selected by the `pushing` latch that `step` carries through
+        the scan:
           reposition -- wand lifted clear, walk to the wall end of `lane_x`
           push       -- walk down the slope to the trough at the commanded
                         standoff and tilt, jet aimed at the trough
+
+        THE LATCH IS NOT OPTIONAL. The first version derived the phase from
+        position alone, as `at_lane & (tip_y <= wall_y - 0.12)`. That predicate
+        is true almost everywhere on the floor rather than only out at the wall,
+        so both ends stalled: a stroke beginning at the trough decided it was
+        already pushing, aimed at the trough it was standing on, and sat there
+        for all 128 control steps; a stroke that did reach the wall flipped the
+        predicate false, targeted the wall, and stalled there instead. Measured
+        on the broken version -- from (1.0, 7.0) the tip never left
+        y in [7.00, 8.00]; from (0.5, 13.9) it ended pinned at y = 14.00. No
+        macro action ever executed a wall->trough push, so the flat 0.37 clean
+        fraction of the first two macro runs was measuring a controller that
+        could not move slurry, not a policy that could not learn.
+
+        Position alone cannot work even in principle: at an interior point,
+        outbound (repositioning) and inbound (pushing) look identical. Hence a
+        latch, which is also what PushSweep carries for the same reason.
         """
         env, fc, wc = self.env, self.env.cfg.floor, self.env.cfg.washer
         wall_y = jnp.where(side > 0, fc.length_y, 0.0)
-
-        # In position to start a push? Must be at the right lane AND out at the
-        # wall end of it, otherwise a stroke would start from wherever the last
-        # one finished and the action would not mean what it says.
-        at_lane = jnp.abs(env_state.tip_x - lane_x) < 0.12
-        past_start = jnp.where(side > 0,
-                               env_state.tip_y <= wall_y - 0.12,
-                               env_state.tip_y >= wall_y + 0.12)
-        pushing = at_lane & past_start
 
         target_y = jnp.where(pushing, fc.trough_y, wall_y)
         speed = jnp.where(pushing, self.push_speed, 1.0)
@@ -203,18 +233,35 @@ class MacroEnv:
         lane_x, side, standoff, tilt = self._decode(action)
 
         def inner(carry, i):
-            es, acc, term_any = carry
-            a = self._low_level(es, lane_x, side, standoff, tilt)
+            es, acc, done, pushing = carry
+            # Latch before acting, so a stroke that already begins in position
+            # pushes on step 0 rather than wasting one step repositioning.
+            pushing = pushing | self._at_start(es, lane_x, side)
+            a = self._low_level(es, lane_x, side, standoff, tilt, pushing)
             nes, _, r, terminated, _trunc, info = self.env.step(es, a)
-            acc = acc + (g ** i) * r
-            return (nes, acc, term_any | terminated), info
+
+            # Mask everything after the FIRST termination. env.step pays
+            # FINISH_BONUS on every step where the floor is clean -- it is not
+            # a one-shot event -- so an unmasked window paid it up to 128 times:
+            # measured 399.0 for one macro step on an already-clean floor,
+            # against the 3.125 a single bonus is worth at this scale. Worse,
+            # the same stroke scored differently depending on which sub-step it
+            # happened to finish on. The low-level trainer never saw this
+            # because ppo.make_chunk resets on `done`; inside a macro window
+            # nothing did.
+            live = ~done
+            acc = acc + jnp.where(live, (g ** i) * r, 0.0)
+            # Freeze the terminal state rather than go on spraying a clean
+            # floor for the rest of the window.
+            nes = jax.tree.map(lambda new, old: jnp.where(live, new, old), nes, es)
+            return (nes, acc, done | terminated, pushing), info
 
         # The inner env already produces every diagnostic the trainer logs, so
         # carry the whole per-step info out and keep the LAST one rather than
         # rebuilding a partial dict here -- a hand-rolled subset silently drops
         # keys and fails deep inside a jitted scan.
-        (env_state, macro_reward, terminated), infos = jax.lax.scan(
-            inner, (state, jnp.array(0.0), jnp.bool_(False)),
+        (env_state, macro_reward, terminated, _pushing), infos = jax.lax.scan(
+            inner, (state, jnp.array(0.0), jnp.bool_(False), jnp.bool_(False)),
             jnp.arange(self.macro_steps))
         info = jax.tree.map(lambda x: x[-1], infos)
 
